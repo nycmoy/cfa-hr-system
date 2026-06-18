@@ -1,5 +1,4 @@
 // ─── Attendance Rule Engine ───────────────────────────────────────────────────
-// Anchor date for 2-week windows
 export const ANCHOR = new Date('2026-06-07')
 export const WINDOW_DAYS = 14
 export const TIER1_MIN = 5
@@ -23,14 +22,14 @@ export function windowLabel(idx) {
   return `${fmt(start)}–${fmt(end)}/${end.getFullYear()}`
 }
 
+export function windowStartDate(idx) {
+  return new Date(ANCHOR.getTime() + idx * WINDOW_DAYS * 24 * 60 * 60 * 1000)
+}
+
 export function parseCSVRow(row) {
-  // CSV columns: FULL_NAME, LOCATION_NUM, WORKDAY, WORKWEEK,
-  // SCHED_START, SCHED_END, WORK_START, WORK_END,
-  // START_VARIANCE, END_VARIANCE, TOTAL_VARIANCE
   const workday = new Date(row.WORKDAY)
   const startVar = parseInt(row.START_VARIANCE) || 0
   const endVar = parseInt(row.END_VARIANCE) || 0
-
   return {
     name: row.FULL_NAME?.trim().replace(/^"|"$/g, '') || '',
     workday,
@@ -59,7 +58,6 @@ export function analyzeEmployee(shifts) {
     const earlyMins = s.endVar < 0 ? Math.abs(s.endVar) : 0
     const overMins = s.endVar > 0 ? s.endVar : 0
 
-    // No-show: arrived 120+ min late
     if (lateMins >= 120) {
       noshowFlags.push({
         type: 'noshow',
@@ -120,32 +118,44 @@ export function analyzeEmployee(shifts) {
   }
 
   const tier1Docs = []
-  const tier1Info = []
+  const tier1InfoOnly = [] // BELOW threshold — informational only, NOT saved to Firestore
 
   for (const [widx, lates] of Object.entries(tier1ByWindow)) {
+    const widxInt = parseInt(widx)
+    // Use the start of the window as the workday for Firestore ordering
+    const windowStart = windowStartDate(widxInt)
     const entry = {
-      type: lates.length >= TIER1_THRESHOLD ? 'tier1' : 'tier1-info',
-      windowIdx: parseInt(widx),
+      windowIdx: widxInt,
       windowLabel: lates[0].windowLabel,
       count: lates.length,
       lates,
-      severity: lates.length >= TIER1_THRESHOLD ? 'medium' : 'info',
+      // workday field needed for Firestore orderBy
+      workday: windowStart,
+      date: lates[0].date, // first late date for display
+      detail: `${lates.length} minor late${lates.length > 1 ? 's' : ''} (5–9 min) in window ${lates[0].windowLabel}`,
       status: 'pending',
     }
-    if (lates.length >= TIER1_THRESHOLD) tier1Docs.push(entry)
-    else tier1Info.push(entry)
+
+    if (lates.length >= TIER1_THRESHOLD) {
+      // TRIGGERS documentation — save to Firestore
+      tier1Docs.push({ ...entry, type: 'tier1', severity: 'medium' })
+    } else {
+      // Below threshold — informational only, do NOT save to Firestore
+      tier1InfoOnly.push({ ...entry, type: 'tier1-info', severity: 'info' })
+    }
   }
 
   const docCount = noshowFlags.length + tier2Flags.length + tier1Docs.length
 
   return {
     tier2: tier2Flags,
-    tier1Docs: tier1Docs.sort((a, b) => a.windowIdx - b.windowIdx),
-    tier1Info: tier1Info.sort((a, b) => a.windowIdx - b.windowIdx),
+    tier1Docs,
+    tier1Info: tier1InfoOnly,  // not saved — display only in baseline view
     noshow: noshowFlags,
     early: earlyFlags,
     overage: overageFlags,
     docCount,
-    allFlags: [...noshowFlags, ...tier2Flags, ...tier1Docs],
+    // Only flags that get saved to Firestore:
+    flagsToSave: [...noshowFlags, ...tier2Flags, ...tier1Docs, ...earlyFlags, ...overageFlags],
   }
 }

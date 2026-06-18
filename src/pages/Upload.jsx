@@ -65,17 +65,9 @@ export default function Upload() {
         // Upsert employee
         const empId = await upsertEmployee(name, { totalShifts: shifts.length })
 
-        // Save all flags
-        const allFlags = [
-          ...analysis.noshow,
-          ...analysis.tier2,
-          ...analysis.tier1Docs,
-          ...analysis.tier1Info,
-          ...analysis.early,
-          ...analysis.overage,
-        ]
-        if (allFlags.length) {
-          await saveAttendanceFlags(empId, allFlags)
+        // Save only flags that should be stored (excludes tier1-info which is below threshold)
+        if (analysis.flagsToSave?.length) {
+          await saveAttendanceFlags(empId, analysis.flagsToSave)
         }
 
         totalDocs += analysis.docCount
