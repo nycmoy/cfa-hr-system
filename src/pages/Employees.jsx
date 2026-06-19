@@ -27,6 +27,9 @@ export default function Employees() {
   const [showImport, setShowImport] = useState(false)
   const [newName, setNewName] = useState('')
   const [newPos, setNewPos] = useState('Team Member')
+  const [newArea, setNewArea] = useState('both')
+  const [newLeadership, setNewLeadership] = useState(false)
+  const [newStartDate, setNewStartDate] = useState('')
   const [saving, setSaving] = useState(false)
 
   // Import state
@@ -49,10 +52,18 @@ export default function Employees() {
   async function addEmployee() {
     if (!newName.trim()) return
     setSaving(true)
-    await upsertEmployee(newName.trim(), { position: newPos })
+    await upsertEmployee(newName.trim(), {
+      position: newPos,
+      currentPosition: newPos,
+      area: newArea,
+      leadershipTrack: newLeadership,
+      initialStartDate: newStartDate || null,
+      currentPositionStartDate: newStartDate || null,
+    })
     await loadEmployees()
     setShowAdd(false)
     setNewName('')
+    setNewStartDate('')
     setSaving(false)
   }
 
@@ -189,7 +200,7 @@ export default function Employees() {
           ) : (
             <table className="data-table">
               <thead>
-                <tr><th>Name</th><th>Position</th><th>Discipline status</th><th>Active</th><th></th></tr>
+                <tr><th>Name</th><th>Position</th><th>Hired</th><th>Discipline status</th><th>Active</th><th></th></tr>
               </thead>
               <tbody>
                 {filtered.map(emp => {
@@ -206,7 +217,8 @@ export default function Employees() {
                           </div>
                         </div>
                       </td>
-                      <td style={{color:'var(--text-sec)',fontSize:12}}>{emp.position || 'Team Member'}</td>
+                      <td style={{color:'var(--text-sec)',fontSize:12}}>{emp.currentPosition || emp.position || 'Team Member'}</td>
+                      <td className="mono" style={{fontSize:11}}>{emp.initialStartDate ? new Date(emp.initialStartDate).toLocaleDateString() : '—'}</td>
                       <td><span className={`badge ${LEVEL_BADGE[level]||'badge-gray'}`}>{LEVEL_LABEL[level]||level}</span></td>
                       <td>
                         <button
@@ -252,6 +264,28 @@ export default function Employees() {
                   <option>Kitchen Lead</option>
                   <option>Manager</option>
                 </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Start date</label>
+                <input type="date" value={newStartDate} onChange={e => setNewStartDate(e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Work area</label>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
+                  {[['foh','FOH'],['boh','BOH'],['both','Both']].map(([v,l]) => (
+                    <div key={v} onClick={() => setNewArea(v)} style={{
+                      border:`0.5px solid ${newArea===v?'var(--amber)':'var(--border)'}`,
+                      borderRadius:'var(--radius)',padding:'8px',textAlign:'center',cursor:'pointer',
+                      background:newArea===v?'var(--amber-lt)':'transparent',fontSize:13,fontWeight:500,
+                    }}>{l}</div>
+                  ))}
+                </div>
+              </div>
+              <div className="form-group">
+                <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
+                  <input type="checkbox" checked={newLeadership} onChange={e => setNewLeadership(e.target.checked)} style={{width:'auto'}} />
+                  <span style={{fontSize:13}}>On leadership track</span>
+                </label>
               </div>
             </div>
             <div className="modal-footer">

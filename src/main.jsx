@@ -11,6 +11,7 @@ import Upload from './pages/Upload'
 import Flags from './pages/Flags'
 import Documentation from './pages/Documentation'
 import Training from './pages/Training'
+import Positions from './pages/Positions'
 import Ratings from './pages/Ratings'
 import FollowUps from './pages/FollowUps'
 import './index.css'
@@ -37,6 +38,7 @@ function App() {
             <Route path="flags" element={<Flags />} />
             <Route path="documentation" element={<Documentation />} />
             <Route path="training" element={<Training />} />
+            <Route path="positions" element={<Positions />} />
             <Route path="ratings" element={<Ratings />} />
             <Route path="followups" element={<FollowUps />} />
           </Route>

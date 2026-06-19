@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { getEmployees, getAttendanceFlags, updateFlagStatus, createDocument } from '../lib/db'
 import { generateCoachingNote } from '../lib/pdfGenerator'
@@ -20,7 +20,6 @@ const SEV_STYLE = {
   info:     { bg: '#F1EFE8', border: '#D3D1C7', text: '#444441' },
 }
 
-// Resolution options per flag type
 const RESOLVE_OPTIONS = {
   noshow:    ['documentation_only','create_documentation','override'],
   tier2:     ['documentation_only','create_documentation','override'],
@@ -37,16 +36,36 @@ const OPTION_META = {
   excuse:               { label: 'Excuse', desc: 'Mark as excused — no documentation created', color: 'var(--green)', bg: 'var(--green-lt)', border: '#C0DD97' },
 }
 
+// Sort key resolvers — each returns a comparable primitive for a given row
+const SORT_RESOLVERS = {
+  employee: f => f.employeeName?.toLowerCase() || '',
+  type: f => TYPE_LABELS[f.type] || f.type || '',
+  date: f => {
+    // tier1 flags use windowIdx for chronological sort, others use workday/date
+    if (f.type === 'tier1' && typeof f.windowIdx === 'number') return f.windowIdx
+    if (f.workday?.seconds) return f.workday.seconds
+    if (f.date) {
+      const d = new Date(f.date)
+      return isNaN(d) ? 0 : d.getTime()
+    }
+    return 0
+  },
+  detail: f => f.detail?.toLowerCase() || '',
+  status: f => f.status || 'pending',
+}
+
 export default function Flags() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('pending')
   const [typeFilter, setTypeFilter] = useState('all')
+  const [empFilter, setEmpFilter] = useState('all')
+  const [sortKey, setSortKey] = useState('severity')
+  const [sortDir, setSortDir] = useState('asc')
   const [selected, setSelected] = useState(null)
   const [resolution, setResolution] = useState('')
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
-  const [showDocForm, setShowDocForm] = useState(false)
 
   useEffect(() => { loadFlags() }, [])
 
@@ -58,10 +77,6 @@ export default function Flags() {
       const flags = await getAttendanceFlags(emp.id)
       flags.forEach(f => all.push({ ...f, employeeId: emp.id, employeeName: emp.name }))
     }
-    all.sort((a, b) => {
-      const sev = { critical: 0, high: 1, medium: 2, review: 3, info: 4 }
-      return (sev[a.severity] ?? 5) - (sev[b.severity] ?? 5)
-    })
     setRows(all)
     setLoading(false)
   }
@@ -70,22 +85,19 @@ export default function Flags() {
     setSelected(f)
     setResolution('')
     setNote('')
-    setShowDocForm(false)
   }
 
   async function handleResolve() {
     if (!selected || !resolution) return
     if (resolution === 'create_documentation') {
-      // Navigate to documentation page
       window.location.href = `/documentation?empId=${selected.employeeId}&flagId=${selected.id}&type=${selected.type}`
       return
     }
-    if (resolution === 'override' && !note.trim()) return // require comment
+    if (resolution === 'override' && !note.trim()) return
 
     setSaving(true)
     try {
       if (resolution === 'documentation_only') {
-        // Create a coaching/documentation-only record then mark flag documented
         const docId = `DOC-${Date.now()}`
         await createDocument(selected.employeeId, {
           docId,
@@ -98,7 +110,6 @@ export default function Flags() {
           relatedFlagId: selected.id,
           relatedFlagType: selected.type,
         })
-        // Generate PDF
         const pdf = generateCoachingNote(
           { name: selected.employeeName },
           'Attendance documentation (record only)',
@@ -126,12 +137,45 @@ export default function Flags() {
     }
   }
 
-  const filtered = rows.filter(r => {
-    const statusMatch = filter === 'all' || r.status === filter ||
-      (filter === 'pending' && (!r.status || r.status === 'pending'))
-    const typeMatch = typeFilter === 'all' || r.type === typeFilter
-    return statusMatch && typeMatch
-  })
+  function handleSort(key) {
+    if (sortKey === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortKey(key)
+      setSortDir('asc')
+    }
+  }
+
+  // Unique employee list for the filter dropdown, derived from loaded flags
+  const employeeOptions = useMemo(() => {
+    const names = new Map()
+    rows.forEach(r => names.set(r.employeeId, r.employeeName))
+    return Array.from(names.entries()).sort((a, b) => a[1].localeCompare(b[1]))
+  }, [rows])
+
+  const filtered = useMemo(() => {
+    let list = rows.filter(r => {
+      const statusMatch = filter === 'all' || r.status === filter ||
+        (filter === 'pending' && (!r.status || r.status === 'pending'))
+      const typeMatch = typeFilter === 'all' || r.type === typeFilter
+      const empMatch = empFilter === 'all' || r.employeeId === empFilter
+      return statusMatch && typeMatch && empMatch
+    })
+
+    if (sortKey === 'severity') {
+      const sev = { critical: 0, high: 1, medium: 2, review: 3, info: 4 }
+      list = [...list].sort((a, b) => (sev[a.severity] ?? 5) - (sev[b.severity] ?? 5))
+    } else {
+      const resolver = SORT_RESOLVERS[sortKey]
+      list = [...list].sort((a, b) => {
+        const av = resolver(a), bv = resolver(b)
+        if (av < bv) return sortDir === 'asc' ? -1 : 1
+        if (av > bv) return sortDir === 'asc' ? 1 : -1
+        return 0
+      })
+    }
+    return list
+  }, [rows, filter, typeFilter, empFilter, sortKey, sortDir])
 
   const pending = rows.filter(r => !r.status || r.status === 'pending').length
   const docNeeded = rows.filter(r =>
@@ -147,6 +191,23 @@ export default function Flags() {
   }
 
   const options = selected ? (RESOLVE_OPTIONS[selected.type] || ['documentation_only','override','excuse']) : []
+
+  const SortHeader = ({ label, k }) => (
+    <th
+      onClick={() => handleSort(k)}
+      style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+      title="Click to sort"
+    >
+      {label}
+      {sortKey === k && (
+        <i
+          className={`ti ti-arrow-${sortDir === 'asc' ? 'up' : 'down'}`}
+          style={{ marginLeft: 4, fontSize: 12 }}
+          aria-hidden="true"
+        />
+      )}
+    </th>
+  )
 
   if (loading) return <div style={{padding:40,textAlign:'center',color:'var(--text-sec)'}}>Loading flags...</div>
 
@@ -178,7 +239,7 @@ export default function Flags() {
               </button>
             ))}
           </div>
-          <div style={{padding:'10px 16px',display:'flex',gap:8,flexWrap:'wrap'}}>
+          <div style={{padding:'10px 16px',display:'flex',gap:8,flexWrap:'wrap',borderBottom:'0.5px solid var(--border)'}}>
             <span style={{fontSize:12,color:'var(--text-sec)',alignSelf:'center',marginRight:4}}>Type:</span>
             {[['all','All'],['noshow','No-show'],['tier2','10+ min'],['tier1','Tier 1'],['early','Early dep.'],['overage','Overage']].map(([v,l]) => (
               <button key={v} onClick={() => setTypeFilter(v)} className="btn btn-sm"
@@ -186,6 +247,18 @@ export default function Flags() {
                 {l}
               </button>
             ))}
+          </div>
+          <div style={{padding:'10px 16px',display:'flex',gap:8,alignItems:'center'}}>
+            <span style={{fontSize:12,color:'var(--text-sec)'}}>Employee:</span>
+            <select value={empFilter} onChange={e => setEmpFilter(e.target.value)} style={{maxWidth:260}}>
+              <option value="all">All employees</option>
+              {employeeOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </select>
+            {empFilter !== 'all' && (
+              <button className="btn btn-sm" onClick={() => setEmpFilter('all')}>
+                <i className="ti ti-x" /> Clear
+              </button>
+            )}
           </div>
         </div>
 
@@ -198,7 +271,14 @@ export default function Flags() {
           ) : (
             <table className="data-table">
               <thead>
-                <tr><th>Employee</th><th>Type</th><th>Date / Window</th><th>Detail</th><th>Status</th><th></th></tr>
+                <tr>
+                  <SortHeader label="Employee" k="employee" />
+                  <SortHeader label="Type" k="type" />
+                  <SortHeader label="Date / Window" k="date" />
+                  <SortHeader label="Detail" k="detail" />
+                  <SortHeader label="Status" k="status" />
+                  <th></th>
+                </tr>
               </thead>
               <tbody>
                 {filtered.map(f => {
@@ -253,7 +333,6 @@ export default function Flags() {
               <button className="btn btn-sm" onClick={() => setSelected(null)}><i className="ti ti-x" /></button>
             </div>
             <div className="modal-body">
-              {/* Flag detail */}
               <div style={{background:'var(--bg)',borderRadius:'var(--radius)',padding:12,marginBottom:16}}>
                 <div style={{fontSize:13,fontWeight:500,marginBottom:4}}>{selected.detail}</div>
                 {selected.lates && (
@@ -274,7 +353,6 @@ export default function Flags() {
                 </div>
               )}
 
-              {/* Resolution options */}
               <div style={{fontSize:12,fontWeight:500,color:'var(--text-sec)',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:10}}>
                 How would you like to resolve this flag?
               </div>
@@ -301,7 +379,6 @@ export default function Flags() {
                 })}
               </div>
 
-              {/* Notes / comment */}
               <div className="form-group">
                 <label className="form-label">
                   {resolution === 'override' ? 'Override reason (required)' : 'Notes (optional)'}

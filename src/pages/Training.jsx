@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { getEmployees, getPositions, addPosition, saveRating, getRatings } from '../lib/db'
+import { useSearchParams, Link } from 'react-router-dom'
+import { getEmployees, getPositions, addPosition, saveRating, getRatings, getAllRatings } from '../lib/db'
+import { applicablePositions, missingForEmployee } from '../lib/positionRules'
 
 export default function Training() {
   const [searchParams] = useSearchParams()
@@ -10,7 +11,9 @@ export default function Training() {
   const [positions, setPositions] = useState([])
   const [selectedEmp, setSelectedEmp] = useState(preEmpId || '')
   const [ratings, setRatings] = useState([])
+  const [allRatings, setAllRatings] = useState([])
   const [loading, setLoading] = useState(true)
+  const [view, setView] = useState(preEmpId ? 'detail' : 'incomplete') // incomplete | detail
   const [showAddPos, setShowAddPos] = useState(false)
   const [newPosName, setNewPosName] = useState('')
   const [rateModal, setRateModal] = useState(null) // { pos }
@@ -21,8 +24,8 @@ export default function Training() {
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    Promise.all([getEmployees(), getPositions()]).then(([e, p]) => {
-      setEmployees(e); setPositions(p); setLoading(false)
+    Promise.all([getEmployees(), getPositions(), getAllRatings()]).then(([e, p, ar]) => {
+      setEmployees(e); setPositions(p); setAllRatings(ar); setLoading(false)
     })
   }, [])
 
@@ -31,6 +34,28 @@ export default function Training() {
       getRatings(selectedEmp).then(setRatings)
     }
   }, [selectedEmp])
+
+  // Incomplete training dashboard — one row per active employee missing
+  // training for at least one applicable position. Leadership positions
+  // only count for employees on the leadership track.
+  const byEmpAll = {}
+  for (const r of allRatings) {
+    if (!byEmpAll[r.employeeId]) byEmpAll[r.employeeId] = new Set()
+    byEmpAll[r.employeeId].add(r.positionId)
+  }
+  const activeEmployees = employees.filter(e => (e.status || 'active') === 'active')
+  const incompleteTraining = activeEmployees
+    .map(emp => {
+      const havePositionIds = Array.from(byEmpAll[emp.id] || [])
+      const missing = missingForEmployee(emp, positions, havePositionIds)
+      return { emp, missing }
+    })
+    .filter(x => x.missing.length > 0)
+
+  function goToEmployee(empId) {
+    setSelectedEmp(empId)
+    setView('detail')
+  }
 
   async function handleAddPosition() {
     if (!newPosName.trim()) return
@@ -54,6 +79,8 @@ export default function Training() {
     })
     const updated = await getRatings(selectedEmp)
     setRatings(updated)
+    const updatedAll = await getAllRatings()
+    setAllRatings(updatedAll)
     setRateModal(null)
     setRNotes('')
     setSaving(false)
@@ -74,6 +101,8 @@ export default function Training() {
     : {background:'var(--red-lt)',color:'var(--red-txt)'}
 
   const avg = ((r1+r2+r3)/3).toFixed(1)
+  const selectedEmpObj = employees.find(e => e.id === selectedEmp)
+  const visiblePositions = selectedEmpObj ? applicablePositions(selectedEmpObj, positions) : []
 
   if (loading) return <div style={{padding:40,textAlign:'center',color:'var(--text-sec)'}}>Loading...</div>
 
@@ -86,9 +115,49 @@ export default function Training() {
         </button>
       </div>
       <div className="content">
+        <div className="tab-row" style={{marginBottom:16}}>
+          <div className={`tab${view==='incomplete'?' active':''}`} onClick={() => setView('incomplete')}>
+            Incomplete ({incompleteTraining.length})
+          </div>
+          <div className={`tab${view==='detail'?' active':''}`} onClick={() => setView('detail')}>By employee</div>
+        </div>
+
+        {view === 'incomplete' && (
+          <div className="card" style={{padding:0}}>
+            {incompleteTraining.length === 0 ? (
+              <div className="empty-state"><i className="ti ti-circle-check" style={{color:'var(--green)'}} /><div>Everyone has training recorded for all their applicable positions.</div></div>
+            ) : (
+              <table className="data-table">
+                <thead><tr><th>Employee</th><th>Area</th><th>Missing training</th><th></th></tr></thead>
+                <tbody>
+                  {incompleteTraining.map(({ emp, missing }) => (
+                    <tr key={emp.id}>
+                      <td>
+                        <span style={{fontWeight:500}}>{emp.name}</span>
+                      </td>
+                      <td>
+                        <span className="badge badge-info">{emp.area === 'foh' ? 'FOH' : emp.area === 'boh' ? 'BOH' : 'FOH + BOH'}</span>
+                        {emp.leadershipTrack && <span className="badge badge-warn" style={{marginLeft:4}}>Leadership</span>}
+                      </td>
+                      <td>
+                        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                          {missing.map(p => <span key={p.id} className="badge badge-gray">{p.name}</span>)}
+                        </div>
+                      </td>
+                      <td><button className="btn btn-sm" onClick={() => goToEmployee(emp.id)}>Train now</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {view === 'detail' && (
+        <>
         <div className="info-box">
           <i className="ti ti-info-circle" aria-hidden="true" />
-          <div>Select an employee to view and rate their position training. Each position is rated on 3 dimensions: <strong>Gets it done</strong> · <strong>Does it right</strong> · <strong>Does it efficiently</strong> (1–10 each).</div>
+          <div>Select an employee to view and rate their position training. Only positions applicable to their FOH/BOH area (and leadership track, if assigned) are shown. Each position is rated on 3 dimensions: <strong>Gets it done</strong> · <strong>Does it right</strong> · <strong>Does it efficiently</strong> (1–10 each).</div>
         </div>
 
         <div className="card">
@@ -103,7 +172,7 @@ export default function Training() {
 
         {selectedEmp && (
           <div className="pos-grid">
-            {positions.map(pos => {
+            {visiblePositions.map(pos => {
               const r = latestByPos[pos.id]
               const hasRating = !!r
               const posAvg = hasRating ? ((r.getsItDone + r.doesItRight + r.doesItEfficiently) / 3).toFixed(1) : null
@@ -155,6 +224,8 @@ export default function Training() {
 
         {!selectedEmp && (
           <div className="empty-state"><i className="ti ti-school" /><div>Select an employee above to view their training profile.</div></div>
+        )}
+        </>
         )}
       </div>
 

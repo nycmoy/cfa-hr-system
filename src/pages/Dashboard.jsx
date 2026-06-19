@@ -120,8 +120,9 @@ export default function Dashboard() {
               <Link to="/upload" className="btn"><i className="ti ti-upload" aria-hidden="true" /> Upload time report</Link>
               <Link to="/flags" className="btn"><i className="ti ti-alert-circle" aria-hidden="true" /> Review flags</Link>
               <Link to="/documentation" className="btn"><i className="ti ti-file-plus" aria-hidden="true" /> New documentation</Link>
-              <Link to="/training" className="btn"><i className="ti ti-school" aria-hidden="true" /> Update training</Link>
-              <Link to="/ratings" className="btn"><i className="ti ti-star" aria-hidden="true" /> Rate employee</Link>
+              <Link to="/training" className="btn"><i className="ti ti-school" aria-hidden="true" /> Position training</Link>
+              <Link to="/ratings" className="btn"><i className="ti ti-star" aria-hidden="true" /> Ratings</Link>
+              <Link to="/positions" className="btn"><i className="ti ti-list-details" aria-hidden="true" /> Manage positions</Link>
             </div>
           </div>
         </div>

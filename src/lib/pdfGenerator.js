@@ -17,7 +17,7 @@ function header(pdf, title, empName, docId, date) {
   pdf.setFontSize(9)
   pdf.setFont('helvetica', 'normal')
   pdf.text(`Employee: ${empName}`, 14, 42)
-  pdf.text(`Document ID: ${docId}`, 14, 48)
+  pdf.text(`Documentation ID: ${docId}`, 14, 48)
   pdf.text(`Date: ${date}`, 14, 54)
   pdf.line(14, 58, 196, 58)
 }
@@ -56,7 +56,7 @@ export function generateWrittenWarning(emp, incidents, notes, docId) {
 
   pdf.setFont('helvetica', 'normal')
   pdf.setFontSize(9)
-  const intro = `This written warning is issued to ${emp.name} regarding attendance policy violations documented during the period covered by this report. This document serves as formal notice and will be retained in the employee's file.`
+  const intro = `This written warning is issued to ${emp.name} regarding attendance policy violations documented during the period covered by this report. This documentation serves as formal notice and will be retained in the employee's file.`
   const introLines = pdf.splitTextToSize(intro, 182)
   pdf.text(introLines, 14, y)
   y += introLines.length * 5 + 6
@@ -161,7 +161,7 @@ export function generateCoachingNote(emp, topic, notes, docId) {
   let y = 66
   pdf.setFontSize(9)
   pdf.setFont('helvetica', 'italic')
-  pdf.text('This document does NOT count toward discipline. It is a record of a coaching conversation only.', 14, y)
+  pdf.text('This documentation does NOT count toward discipline. It is a record of a coaching conversation only.', 14, y)
   y += 10
 
   pdf.setFont('helvetica', 'bold')

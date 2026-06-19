@@ -40,6 +40,9 @@ export default function Layout() {
         <NavLink to="/training" className={({isActive})=>`nav-item${isActive?' active':''}`}>
           <i className="ti ti-school" aria-hidden="true" /> Position training
         </NavLink>
+        <NavLink to="/positions" className={({isActive})=>`nav-item${isActive?' active':''}`}>
+          <i className="ti ti-list-details" aria-hidden="true" /> Manage positions
+        </NavLink>
         <NavLink to="/ratings" className={({isActive})=>`nav-item${isActive?' active':''}`}>
           <i className="ti ti-star" aria-hidden="true" /> Ratings
         </NavLink>

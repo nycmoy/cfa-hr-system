@@ -72,7 +72,8 @@ export default function Documentation() {
 
       // Generate PDF
       let pdf = null
-      const emp = { name: empName }
+      const resolvedEmpNameForPdf = empName || employees.find(e => e.id === empId)?.name || 'Unknown'
+      const emp = { name: resolvedEmpNameForPdf }
       if (docType === 'written_warning') {
         pdf = generateWrittenWarning(emp, [], notes, docId)
       } else if (docType === 'final_warning') {
@@ -83,17 +84,22 @@ export default function Documentation() {
 
       if (pdf) pdf.save(`${docId}.pdf`)
 
-      await createDocument(empId, {
+      // Firestore rejects `undefined` field values — build the payload defensively
+      const resolvedEmpName = empName || employees.find(e => e.id === empId)?.name || ''
+      const payload = {
         docId,
         docType,
         date: new Date(date).toLocaleDateString('en-US'),
-        notes,
+        notes: notes || '',
         signatureStatus,
         countsTowardDiscipline: docTypeMeta?.counts || false,
-        deviationReason,
-        hoursData,
-        employeeName: empName,
-      })
+        deviationReason: deviationReason || '',
+        employeeName: resolvedEmpName,
+      }
+      // Only attach hoursData if it actually has values (avoid undefined fields)
+      if (hoursData) payload.hoursData = hoursData
+
+      await createDocument(empId, payload)
 
       await loadAllDocs()
       setShowForm(false)
@@ -111,7 +117,7 @@ export default function Documentation() {
       <div className="topbar">
         <span className="topbar-title">Documentation</span>
         <button className="btn btn-primary" onClick={() => setShowForm(true)}>
-          <i className="ti ti-file-plus" aria-hidden="true" /> New document
+          <i className="ti ti-file-plus" aria-hidden="true" /> New documentation
         </button>
       </div>
       <div className="content">
@@ -127,7 +133,7 @@ export default function Documentation() {
             ))}
           </div>
           {allDocs.length === 0 ? (
-            <div className="empty-state"><i className="ti ti-file-text" /><div>No documents yet. Create your first one.</div></div>
+            <div className="empty-state"><i className="ti ti-file-text" /><div>No documentation yet. Create your first one.</div></div>
           ) : (
             <table className="data-table">
               <thead><tr><th>Doc ID</th><th>Employee</th><th>Type</th><th>Date</th><th>Counts</th><th>Signature</th><th></th></tr></thead>
@@ -179,16 +185,16 @@ export default function Documentation() {
               </div>
 
               <div className="form-group">
-                <label className="form-label">Document type</label>
+                <label className="form-label">Documentation type</label>
                 <select value={docType} onChange={e => setDocType(e.target.value)}>
                   {DOC_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}{t.counts ? ' (counts toward discipline)' : ' (does NOT count toward discipline)'}</option>)}
                 </select>
               </div>
 
               {docTypeMeta?.counts ? (
-                <div className="danger-box"><i className="ti ti-alert-triangle" aria-hidden="true" /><div>This document <strong>will count toward discipline status</strong>. Leadership must approve before issuing.</div></div>
+                <div className="danger-box"><i className="ti ti-alert-triangle" aria-hidden="true" /><div>This documentation <strong>will count toward discipline status</strong>. Leadership must approve before issuing.</div></div>
               ) : (
-                <div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /><div>This document will <strong>NOT</strong> advance discipline status. It appears on the timeline as a coaching record only.</div></div>
+                <div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /><div>This documentation will <strong>NOT</strong> advance discipline status. It appears on the timeline as a coaching record only.</div></div>
               )}
 
               {docType === 'final_warning' && (
@@ -242,7 +248,7 @@ export default function Documentation() {
               </div>
               {signatureStatus === 'refused' && (
                 <div style={{fontSize:12,color:'var(--red-txt)',marginTop:8}}>
-                  <i className="ti ti-info-circle" aria-hidden="true" /> Refusal to sign does not prevent this document from being completed. A witness signature is required.
+                  <i className="ti ti-info-circle" aria-hidden="true" /> Refusal to sign does not prevent this documentation from being completed. A witness signature is required.
                 </div>
               )}
             </div>

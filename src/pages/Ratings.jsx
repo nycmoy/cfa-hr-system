@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { getEmployees, getPositions, getAllRatings } from '../lib/db'
+import { applicablePositions, missingForEmployee } from '../lib/positionRules'
 
 export default function Ratings() {
   const [searchParams] = useSearchParams()
@@ -10,7 +11,7 @@ export default function Ratings() {
   const [positions, setPositions] = useState([])
   const [allRatings, setAllRatings] = useState([])
   const [loading, setLoading] = useState(true)
-  const [view, setView] = useState('team') // team | individual
+  const [view, setView] = useState('team') // team | individual | incomplete
 
   useEffect(() => {
     Promise.all([getEmployees(), getPositions(), getAllRatings()]).then(([e, p, r]) => {
@@ -43,6 +44,18 @@ export default function Ratings() {
     }
   }
 
+  // Incomplete: one row per active employee who is missing a rating for
+  // at least one applicable position (leadership positions only count if
+  // the employee is on the leadership track).
+  const activeEmployees = employees.filter(e => (e.status || 'active') === 'active')
+  const incomplete = activeEmployees
+    .map(emp => {
+      const ratedPositionIds = Object.keys(byEmp[emp.id] || {})
+      const missing = missingForEmployee(emp, positions, ratedPositionIds)
+      return { emp, missing }
+    })
+    .filter(x => x.missing.length > 0)
+
   const avg = (arr, key) => arr.reduce((s, r) => s + r[key], 0) / arr.length
 
   if (loading) return <div style={{padding:40,textAlign:'center',color:'var(--text-sec)'}}>Loading ratings...</div>
@@ -57,9 +70,43 @@ export default function Ratings() {
       </div>
       <div className="content">
         <div className="tab-row" style={{marginBottom:16}}>
+          <div className={`tab${view==='incomplete'?' active':''}`} onClick={() => setView('incomplete')}>
+            Incomplete ({incomplete.length})
+          </div>
           <div className={`tab${view==='team'?' active':''}`} onClick={() => setView('team')}>Team averages by position</div>
           <div className={`tab${view==='individual'?' active':''}`} onClick={() => setView('individual')}>Individual ratings</div>
         </div>
+
+        {view === 'incomplete' && (
+          <div className="card" style={{padding:0}}>
+            {incomplete.length === 0 ? (
+              <div className="empty-state"><i className="ti ti-circle-check" style={{color:'var(--green)'}} /><div>Everyone has at least one rating recorded for all their applicable positions.</div></div>
+            ) : (
+              <table className="data-table">
+                <thead><tr><th>Employee</th><th>Area</th><th>Missing ratings</th><th></th></tr></thead>
+                <tbody>
+                  {incomplete.map(({ emp, missing }) => (
+                    <tr key={emp.id}>
+                      <td>
+                        <Link to={`/employees/${emp.id}`} style={{fontWeight:500,color:'var(--text)',textDecoration:'none'}}>{emp.name}</Link>
+                      </td>
+                      <td>
+                        <span className="badge badge-info">{emp.area === 'foh' ? 'FOH' : emp.area === 'boh' ? 'BOH' : 'FOH + BOH'}</span>
+                        {emp.leadershipTrack && <span className="badge badge-warn" style={{marginLeft:4}}>Leadership</span>}
+                      </td>
+                      <td>
+                        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                          {missing.map(p => <span key={p.id} className="badge badge-gray">{p.name}</span>)}
+                        </div>
+                      </td>
+                      <td><Link to={`/training?empId=${emp.id}`} className="btn btn-sm">Rate now</Link></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
 
         {view === 'team' && (
           <div className="card" style={{padding:0}}>

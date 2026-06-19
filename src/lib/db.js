@@ -4,6 +4,14 @@ import {
 } from 'firebase/firestore'
 import { db } from './firebase'
 
+function stripUndefined(obj) {
+  const clean = {}
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) clean[k] = v
+  }
+  return clean
+}
+
 // ─── EMPLOYEES ────────────────────────────────────────────────────────────────
 export async function getEmployees() {
   const snap = await getDocs(query(collection(db, 'employees'), orderBy('name')))
@@ -20,22 +28,33 @@ export async function upsertEmployee(name, data = {}) {
   const ref = doc(db, 'employees', id)
   const existing = await getDoc(ref)
   if (existing.exists()) {
-    await updateDoc(ref, { ...data, updatedAt: serverTimestamp() })
+    await updateDoc(ref, { ...stripUndefined(data), updatedAt: serverTimestamp() })
   } else {
-    await setDoc(ref, {
+    await setDoc(ref, stripUndefined({
       name,
       status: 'active',
       disciplineLevel: 'good_standing',
       leadershipStatus: 'good_standing',
       leadershipStatusNote: '',
-      hireDate: null,
+      initialStartDate: null,
+      currentPosition: 'Team Member',
+      currentPositionStartDate: null,
+      area: 'both',          // 'foh' | 'boh' | 'both'
+      leadershipTrack: false, // additive flag — leadership positions apply on top of area
       position: 'Team Member',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
       ...data,
-    })
+    }))
   }
   return id
+}
+
+export async function updateEmployee(id, data) {
+  await updateDoc(doc(db, 'employees', id), stripUndefined({
+    ...data,
+    updatedAt: serverTimestamp(),
+  }))
 }
 
 // ─── ATTENDANCE FLAGS ─────────────────────────────────────────────────────────
@@ -69,16 +88,17 @@ export async function updateFlagStatus(employeeId, flagId, status, note = '') {
 
 // ─── DOCUMENTATION ────────────────────────────────────────────────────────────
 export async function createDocument(employeeId, docData) {
-  const docId = `DOC-${Date.now()}`
+  // Respect an explicitly-passed docId; only generate one if missing
+  const docId = docData.docId || `DOC-${Date.now()}`
   const ref = doc(db, 'employees', employeeId, 'documents', docId)
-  await setDoc(ref, {
+  await setDoc(ref, stripUndefined({
+    ...docData,
     docId,
     employeeId,
-    ...docData,
     createdAt: serverTimestamp(),
     status: 'active',
-    signatureStatus: 'pending',
-  })
+    signatureStatus: docData.signatureStatus || 'pending',
+  }))
   // Also update discipline level on employee
   if (docData.countsTowardDiscipline) {
     await updateDoc(doc(db, 'employees', employeeId), {
@@ -102,6 +122,12 @@ export async function updateDocument(employeeId, docId, data) {
   })
 }
 
+// Aliases — internal storage stays "documents" for backward compatibility,
+// but the app's UI and vocabulary refer to these as "Documentation".
+export const createDocumentation = createDocument
+export const getDocumentation = getDocuments
+export const updateDocumentation = updateDocument
+
 // ─── POSITIONS ────────────────────────────────────────────────────────────────
 export async function getPositions() {
   const snap = await getDocs(query(collection(db, 'positions'), orderBy('name')))
@@ -114,23 +140,44 @@ export async function getPositions() {
 
 async function seedDefaultPositions() {
   const defaults = [
-    'Front counter', 'Drive-thru cashier', 'Drive-thru window',
-    'Fry station', 'Nugget station', 'Sandwich assembly',
-    'Boh prep', 'Drinks / desserts', 'Dining room',
-    'Opening duties', 'Closing duties', 'Leadership / trainer',
+    { name: 'Front counter', area: 'foh', leadership: false },
+    { name: 'Drive-thru cashier', area: 'foh', leadership: false },
+    { name: 'Drive-thru window', area: 'foh', leadership: false },
+    { name: 'Dining room', area: 'foh', leadership: false },
+    { name: 'Fry station', area: 'boh', leadership: false },
+    { name: 'Nugget station', area: 'boh', leadership: false },
+    { name: 'Sandwich assembly', area: 'boh', leadership: false },
+    { name: 'Boh prep', area: 'boh', leadership: false },
+    { name: 'Drinks / desserts', area: 'both', leadership: false },
+    { name: 'Opening duties', area: 'both', leadership: false },
+    { name: 'Closing duties', area: 'both', leadership: false },
+    { name: 'Leadership / trainer', area: 'both', leadership: true },
   ]
   const batch = writeBatch(db)
-  for (const name of defaults) {
-    const id = name.toLowerCase().replace(/[^a-z0-9]/g, '_')
-    batch.set(doc(db, 'positions', id), { name, createdAt: serverTimestamp() })
+  for (const p of defaults) {
+    const id = p.name.toLowerCase().replace(/[^a-z0-9]/g, '_')
+    batch.set(doc(db, 'positions', id), { ...p, createdAt: serverTimestamp() })
   }
   await batch.commit()
 }
 
-export async function addPosition(name) {
+export async function addPosition(name, area = 'both', leadership = false) {
   const id = name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/__+/g, '_')
-  await setDoc(doc(db, 'positions', id), { name, createdAt: serverTimestamp() })
+  await setDoc(doc(db, 'positions', id), {
+    name, area, leadership: !!leadership, createdAt: serverTimestamp(),
+  })
   return id
+}
+
+export async function updatePosition(id, data) {
+  await updateDoc(doc(db, 'positions', id), stripUndefined({
+    ...data,
+    updatedAt: serverTimestamp(),
+  }))
+}
+
+export async function deletePosition(id) {
+  await deleteDoc(doc(db, 'positions', id))
 }
 
 // ─── RATINGS ─────────────────────────────────────────────────────────────────
