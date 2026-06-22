@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getEmployees, getAllOpenFollowUps, getUploads } from '../lib/db'
+import { DISCIPLINE_LABEL, DISCIPLINE_BADGE } from '../lib/disciplineLevels'
 
 export default function Dashboard() {
   const [employees, setEmployees] = useState([])
@@ -17,7 +18,11 @@ export default function Dashboard() {
   if (loading) return <div style={{padding:40,textAlign:'center',color:'var(--text-sec)'}}>Loading...</div>
 
   const active = employees.filter(e => e.status === 'active')
-  const withDiscipline = employees.filter(e => e.disciplineLevel && e.disciplineLevel !== 'good_standing')
+  const levelOf = e => e.leadershipStatus || e.disciplineLevel || 'good_standing'
+  const withDiscipline = employees.filter(e => levelOf(e) !== 'good_standing')
+  const finalWarningHours = employees.filter(e => levelOf(e) === 'final_warning')
+  const terminated = employees.filter(e => levelOf(e) === 'termination')
+
   const dueThisWeek = followups.filter(f => {
     if (!f.dueDate) return false
     const due = new Date(f.dueDate)
@@ -59,6 +64,48 @@ export default function Dashboard() {
           </div>
         </div>
 
+        {/* Final Warning + Reduced Hours / Termination callouts */}
+        {(finalWarningHours.length > 0 || terminated.length > 0) && (
+          <div style={{display:'grid',gridTemplateColumns: finalWarningHours.length && terminated.length ? '1fr 1fr' : '1fr',gap:16,marginBottom:16}}>
+            {finalWarningHours.length > 0 && (
+              <div className="card" style={{borderLeft:'3px solid var(--red)',borderRadius:'0 var(--radius-lg) var(--radius-lg) 0',marginBottom:0}}>
+                <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                  <span className="card-title" style={{marginBottom:0,color:'var(--red-txt)'}}>
+                    <i className="ti ti-clock-exclamation" aria-hidden="true" /> Final Warning + Reduced Hours ({finalWarningHours.length})
+                  </span>
+                </div>
+                {finalWarningHours.map(e => (
+                  <div key={e.id} style={{padding:'10px 16px',borderBottom:'0.5px solid var(--border)',display:'flex',alignItems:'center',gap:10}}>
+                    <div style={{flex:1}}>
+                      <Link to={`/employees/${e.id}`} style={{fontSize:13,fontWeight:500,color:'var(--text)',textDecoration:'none'}}>{e.name}</Link>
+                      <div style={{fontSize:11,color:'var(--text-sec)'}}>Review date: {e.finalWarningReviewDate || '—'}</div>
+                    </div>
+                    <Link to={`/employees/${e.id}`} className="btn btn-sm">Review</Link>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {terminated.length > 0 && (
+              <div className="card" style={{borderLeft:'3px solid #5F5E5A',borderRadius:'0 var(--radius-lg) var(--radius-lg) 0',marginBottom:0}}>
+                <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                  <span className="card-title" style={{marginBottom:0,color:'#5F5E5A'}}>
+                    <i className="ti ti-user-x" aria-hidden="true" /> Termination ({terminated.length})
+                  </span>
+                </div>
+                {terminated.map(e => (
+                  <div key={e.id} style={{padding:'10px 16px',borderBottom:'0.5px solid var(--border)',display:'flex',alignItems:'center',gap:10}}>
+                    <div style={{flex:1}}>
+                      <Link to={`/employees/${e.id}`} style={{fontSize:13,fontWeight:500,color:'var(--text)',textDecoration:'none'}}>{e.name}</Link>
+                    </div>
+                    <Link to={`/employees/${e.id}`} className="btn btn-sm">View record</Link>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
           {/* Follow-ups due */}
           <div className="card">
@@ -92,19 +139,13 @@ export default function Dashboard() {
               <div className="empty-state"><i className="ti ti-circle-check" style={{color:'var(--green)'}} /><div>No active discipline cases</div></div>
             ) : (
               withDiscipline.slice(0, 6).map(e => {
-                const level = e.leadershipStatus || e.disciplineLevel
-                const levelLabel = {
-                  written_warning: 'Written warning',
-                  final_warning: 'Final warning',
-                  coaching: 'Coaching',
-                }[level] || level
-                const cls = level === 'final_warning' ? 'badge-danger' : 'badge-warn'
+                const level = levelOf(e)
                 return (
                   <div key={e.id} style={{padding:'9px 16px',borderBottom:'0.5px solid var(--border)',display:'flex',alignItems:'center',gap:10}}>
                     <div style={{flex:1}}>
                       <Link to={`/employees/${e.id}`} style={{fontSize:13,fontWeight:500,color:'var(--text)',textDecoration:'none'}}>{e.name}</Link>
                     </div>
-                    <span className={`badge ${cls}`}>{levelLabel}</span>
+                    <span className={`badge ${DISCIPLINE_BADGE[level]||'badge-gray'}`}>{DISCIPLINE_LABEL[level]||level}</span>
                   </div>
                 )
               })

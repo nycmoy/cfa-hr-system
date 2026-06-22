@@ -10,6 +10,7 @@ const TYPE_LABELS = {
   'tier1-info': 'Minor late',
   early: 'Early departure',
   overage: 'Overage',
+  excessive_absence: 'Excessive absences',
 }
 
 const SEV_STYLE = {
@@ -27,6 +28,7 @@ const RESOLVE_OPTIONS = {
   early:     ['documentation_only','override','excuse'],
   overage:   ['override','excuse'],
   'tier1-info': ['override','excuse'],
+  excessive_absence: ['create_documentation','documentation_only','excuse'],
 }
 
 const OPTION_META = {
@@ -241,7 +243,7 @@ export default function Flags() {
           </div>
           <div style={{padding:'10px 16px',display:'flex',gap:8,flexWrap:'wrap',borderBottom:'0.5px solid var(--border)'}}>
             <span style={{fontSize:12,color:'var(--text-sec)',alignSelf:'center',marginRight:4}}>Type:</span>
-            {[['all','All'],['noshow','No-show'],['tier2','10+ min'],['tier1','Tier 1'],['early','Early dep.'],['overage','Overage']].map(([v,l]) => (
+            {[['all','All'],['noshow','No-show'],['tier2','10+ min'],['tier1','Tier 1'],['early','Early dep.'],['overage','Overage'],['excessive_absence','Excessive absences']].map(([v,l]) => (
               <button key={v} onClick={() => setTypeFilter(v)} className="btn btn-sm"
                 style={typeFilter===v?{background:'var(--blue)',borderColor:'var(--blue)',color:'#fff'}:{}}>
                 {l}
@@ -350,6 +352,13 @@ export default function Flags() {
                 <div className="warn-box">
                   <i className="ti ti-info-circle" aria-hidden="true" />
                   <div>Investigate before resolving. Was there an approved absence, emergency, or schedule error?</div>
+                </div>
+              )}
+
+              {selected.type === 'excessive_absence' && (
+                <div className="warn-box">
+                  <i className="ti ti-info-circle" aria-hidden="true" />
+                  <div>This flag exists to prompt evaluation, regardless of whether prior absences were excused. Review the employee's full absence history before deciding next steps.</div>
                 </div>
               )}
 

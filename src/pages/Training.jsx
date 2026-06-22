@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
-import { getEmployees, getPositions, addPosition, saveRating, getRatings, getAllRatings } from '../lib/db'
+import { getEmployees, getPositions, addPosition, setTrainingStatus, getTraining, getAllTraining, saveRating, getRatings } from '../lib/db'
 import { applicablePositions, missingForEmployee } from '../lib/positionRules'
 
 export default function Training() {
@@ -10,43 +10,49 @@ export default function Training() {
   const [employees, setEmployees] = useState([])
   const [positions, setPositions] = useState([])
   const [selectedEmp, setSelectedEmp] = useState(preEmpId || '')
+  const [training, setTraining] = useState([])
+  const [allTraining, setAllTraining] = useState([])
   const [ratings, setRatings] = useState([])
-  const [allRatings, setAllRatings] = useState([])
   const [loading, setLoading] = useState(true)
   const [view, setView] = useState(preEmpId ? 'detail' : 'incomplete') // incomplete | detail
   const [showAddPos, setShowAddPos] = useState(false)
   const [newPosName, setNewPosName] = useState('')
-  const [rateModal, setRateModal] = useState(null) // { pos }
+  const [savingPos, setSavingPos] = useState(null) // positionId currently saving
+  const [editingDate, setEditingDate] = useState(null) // positionId whose date is being edited
+
+  // Optional 1-10 rating modal (kept separate from yes/no completion)
+  const [rateModal, setRateModal] = useState(null)
   const [r1, setR1] = useState(7)
   const [r2, setR2] = useState(7)
   const [r3, setR3] = useState(7)
   const [rNotes, setRNotes] = useState('')
-  const [saving, setSaving] = useState(false)
+  const [savingRating, setSavingRating] = useState(false)
 
   useEffect(() => {
-    Promise.all([getEmployees(), getPositions(), getAllRatings()]).then(([e, p, ar]) => {
-      setEmployees(e); setPositions(p); setAllRatings(ar); setLoading(false)
+    Promise.all([getEmployees(), getPositions(), getAllTraining()]).then(([e, p, at]) => {
+      setEmployees(e); setPositions(p); setAllTraining(at); setLoading(false)
     })
   }, [])
 
   useEffect(() => {
     if (selectedEmp) {
+      getTraining(selectedEmp).then(setTraining)
       getRatings(selectedEmp).then(setRatings)
     }
   }, [selectedEmp])
 
   // Incomplete training dashboard — one row per active employee missing
-  // training for at least one applicable position. Leadership positions
-  // only count for employees on the leadership track.
-  const byEmpAll = {}
-  for (const r of allRatings) {
-    if (!byEmpAll[r.employeeId]) byEmpAll[r.employeeId] = new Set()
-    byEmpAll[r.employeeId].add(r.positionId)
+  // a COMPLETED training record for at least one applicable position.
+  const completedByEmp = {}
+  for (const t of allTraining) {
+    if (!t.completed) continue
+    if (!completedByEmp[t.employeeId]) completedByEmp[t.employeeId] = new Set()
+    completedByEmp[t.employeeId].add(t.positionId)
   }
   const activeEmployees = employees.filter(e => (e.status || 'active') === 'active')
   const incompleteTraining = activeEmployees
     .map(emp => {
-      const havePositionIds = Array.from(byEmpAll[emp.id] || [])
+      const havePositionIds = Array.from(completedByEmp[emp.id] || [])
       const missing = missingForEmployee(emp, positions, havePositionIds)
       return { emp, missing }
     })
@@ -66,9 +72,33 @@ export default function Training() {
     setShowAddPos(false)
   }
 
+  // Toggle a position's Yes/No completion. Auto-populates today's date when
+  // checked to Yes; clears the date when unchecked back to No.
+  async function toggleTraining(pos, checked) {
+    setSavingPos(pos.id)
+    const existing = training.find(t => t.positionId === pos.id)
+    const dateToUse = checked
+      ? (existing?.completedDate || new Date().toISOString().split('T')[0])
+      : null
+    await setTrainingStatus(selectedEmp, pos.id, pos.name, checked, dateToUse)
+    const updated = await getTraining(selectedEmp)
+    setTraining(updated)
+    const updatedAll = await getAllTraining()
+    setAllTraining(updatedAll)
+    setSavingPos(null)
+  }
+
+  async function updateTrainingDate(pos, newDate) {
+    await setTrainingStatus(selectedEmp, pos.id, pos.name, true, newDate)
+    const updated = await getTraining(selectedEmp)
+    setTraining(updated)
+    const updatedAll = await getAllTraining()
+    setAllTraining(updatedAll)
+  }
+
   async function handleSaveRating() {
     if (!selectedEmp || !rateModal) return
-    setSaving(true)
+    setSavingRating(true)
     await saveRating(selectedEmp, rateModal.pos.id, {
       positionId: rateModal.pos.id,
       positionName: rateModal.pos.name,
@@ -79,18 +109,18 @@ export default function Training() {
     })
     const updated = await getRatings(selectedEmp)
     setRatings(updated)
-    const updatedAll = await getAllRatings()
-    setAllRatings(updatedAll)
     setRateModal(null)
     setRNotes('')
-    setSaving(false)
+    setSavingRating(false)
   }
 
-  // Latest rating per position for selected employee
-  const latestByPos = {}
+  const trainingByPos = {}
+  for (const t of training) trainingByPos[t.positionId] = t
+
+  const ratingsByPos = {}
   for (const r of ratings) {
-    if (!latestByPos[r.positionId] || r.ratedAt?.seconds > latestByPos[r.positionId].ratedAt?.seconds) {
-      latestByPos[r.positionId] = r
+    if (!ratingsByPos[r.positionId] || r.ratedAt?.seconds > ratingsByPos[r.positionId].ratedAt?.seconds) {
+      ratingsByPos[r.positionId] = r
     }
   }
 
@@ -103,6 +133,7 @@ export default function Training() {
   const avg = ((r1+r2+r3)/3).toFixed(1)
   const selectedEmpObj = employees.find(e => e.id === selectedEmp)
   const visiblePositions = selectedEmpObj ? applicablePositions(selectedEmpObj, positions) : []
+  const completedCount = visiblePositions.filter(p => trainingByPos[p.id]?.completed).length
 
   if (loading) return <div style={{padding:40,textAlign:'center',color:'var(--text-sec)'}}>Loading...</div>
 
@@ -132,9 +163,7 @@ export default function Training() {
                 <tbody>
                   {incompleteTraining.map(({ emp, missing }) => (
                     <tr key={emp.id}>
-                      <td>
-                        <span style={{fontWeight:500}}>{emp.name}</span>
-                      </td>
+                      <td><span style={{fontWeight:500}}>{emp.name}</span></td>
                       <td>
                         <span className="badge badge-info">{emp.area === 'foh' ? 'FOH' : emp.area === 'boh' ? 'BOH' : 'FOH + BOH'}</span>
                         {emp.leadershipTrack && <span className="badge badge-warn" style={{marginLeft:4}}>Leadership</span>}
@@ -157,7 +186,7 @@ export default function Training() {
         <>
         <div className="info-box">
           <i className="ti ti-info-circle" aria-hidden="true" />
-          <div>Select an employee to view and rate their position training. Only positions applicable to their FOH/BOH area (and leadership track, if assigned) are shown. Each position is rated on 3 dimensions: <strong>Gets it done</strong> · <strong>Does it right</strong> · <strong>Does it efficiently</strong> (1–10 each).</div>
+          <div>Check off each position as the employee completes training. The date auto-fills to today but you can edit it to backdate. Only positions applicable to their FOH/BOH area (and leadership track, if assigned) are shown.</div>
         </div>
 
         <div className="card">
@@ -171,65 +200,105 @@ export default function Training() {
         </div>
 
         {selectedEmp && (
-          <div className="pos-grid">
-            {visiblePositions.map(pos => {
-              const r = latestByPos[pos.id]
-              const hasRating = !!r
-              const posAvg = hasRating ? ((r.getsItDone + r.doesItRight + r.doesItEfficiently) / 3).toFixed(1) : null
-              const status = hasRating ? (parseFloat(posAvg) >= 7 ? 'certified' : 'in-progress') : 'not-started'
-
-              return (
-                <div key={pos.id} className={`pos-card ${status}`}>
-                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
-                    <div style={{fontSize:13,fontWeight:500}}>{pos.name}</div>
-                    <span className={`badge ${status==='certified'?'badge-ok':status==='in-progress'?'badge-warn':'badge-gray'}`}>
-                      {status==='certified'?'Certified':status==='in-progress'?'In progress':'Not rated'}
-                    </span>
-                  </div>
-
-                  {hasRating && (
-                    <>
-                      {[['Gets it done',r.getsItDone],['Does it right',r.doesItRight],['Does it efficiently',r.doesItEfficiently]].map(([l,v]) => (
-                        <div key={l} className="rating-row">
-                          <div className="rating-label" style={{fontSize:11,width:100}}>{l}</div>
-                          <div className="rating-track"><div className="rating-fill" style={{width:`${v*10}%`,background:ratingColor(v)}} /></div>
-                          <div className="rating-val">{v}</div>
-                        </div>
-                      ))}
-                      <div style={{display:'flex',alignItems:'center',gap:8,marginTop:10,paddingTop:10,borderTop:'0.5px solid var(--border)'}}>
-                        <div className="score-circle score-circle-sm" style={scoreStyle(parseFloat(posAvg))}>
-                          <div className="score-num" style={{fontSize:14}}>{posAvg}</div>
-                        </div>
-                        <div style={{fontSize:12,color:'var(--text-sec)'}}>Overall avg</div>
-                        <button className="btn btn-sm" style={{marginLeft:'auto'}} onClick={() => { setRateModal({pos}); setR1(r.getsItDone); setR2(r.doesItRight); setR3(r.doesItEfficiently); setRNotes('') }}>
-                          <i className="ti ti-pencil" /> Re-rate
-                        </button>
-                      </div>
-                    </>
-                  )}
-
-                  {!hasRating && (
-                    <div style={{marginTop:10}}>
-                      <div style={{fontSize:12,color:'var(--text-sec)',marginBottom:8}}>Not yet rated</div>
-                      <button className="btn btn-sm" onClick={() => { setRateModal({pos}); setR1(7); setR2(7); setR3(7); setRNotes('') }}>
-                        <i className="ti ti-plus" /> Rate this position
-                      </button>
-                    </div>
-                  )}
+          <>
+            <div className="card" style={{marginBottom:16}}>
+              <div className="card-body" style={{display:'flex',alignItems:'center',gap:12}}>
+                <div className="score-circle" style={completedCount===visiblePositions.length && visiblePositions.length>0 ? {background:'var(--green-lt)',color:'var(--green-txt)'} : {background:'var(--amber-lt)',color:'var(--amber-txt)'}}>
+                  <div className="score-num">{completedCount}</div>
+                  <div className="score-den">/ {visiblePositions.length}</div>
                 </div>
-              )
-            })}
-          </div>
+                <div>
+                  <div style={{fontSize:13,fontWeight:500}}>Positions completed</div>
+                  <div style={{fontSize:12,color:'var(--text-sec)'}}>{selectedEmpObj?.name}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="card" style={{padding:0}}>
+              <table className="data-table">
+                <thead><tr><th style={{width:40}}></th><th>Position</th><th>Completed date</th><th>Rating (optional)</th></tr></thead>
+                <tbody>
+                  {visiblePositions.map(pos => {
+                    const t = trainingByPos[pos.id]
+                    const isComplete = !!t?.completed
+                    const r = ratingsByPos[pos.id]
+                    const posAvg = r ? ((r.getsItDone + r.doesItRight + r.doesItEfficiently) / 3).toFixed(1) : null
+                    return (
+                      <tr key={pos.id}>
+                        <td>
+                          <div
+                            onClick={() => savingPos !== pos.id && toggleTraining(pos, !isComplete)}
+                            style={{
+                              width:22,height:22,borderRadius:5,
+                              border:`1.5px solid ${isComplete?'var(--green)':'var(--border)'}`,
+                              background:isComplete?'var(--green)':'transparent',
+                              display:'flex',alignItems:'center',justifyContent:'center',
+                              cursor:savingPos===pos.id?'wait':'pointer',
+                              opacity:savingPos===pos.id?0.5:1,
+                            }}
+                          >
+                            {isComplete && <i className="ti ti-check" style={{color:'#fff',fontSize:15}} />}
+                          </div>
+                        </td>
+                        <td style={{fontWeight:500}}>{pos.name}</td>
+                        <td>
+                          {isComplete ? (
+                            editingDate === pos.id ? (
+                              <input
+                                type="date"
+                                value={t.completedDate || ''}
+                                onChange={e => updateTrainingDate(pos, e.target.value)}
+                                onBlur={() => setEditingDate(null)}
+                                autoFocus
+                                style={{maxWidth:160}}
+                              />
+                            ) : (
+                              <span
+                                className="mono"
+                                style={{cursor:'pointer',textDecoration:'underline dotted'}}
+                                onClick={() => setEditingDate(pos.id)}
+                                title="Click to edit date"
+                              >
+                                {t.completedDate ? new Date(t.completedDate).toLocaleDateString() : '—'} <i className="ti ti-pencil" style={{fontSize:11}} />
+                              </span>
+                            )
+                          ) : (
+                            <span style={{color:'var(--text-ter)',fontSize:12}}>Not completed</span>
+                          )}
+                        </td>
+                        <td>
+                          {r ? (
+                            <div style={{display:'flex',alignItems:'center',gap:8}}>
+                              <div className="score-circle score-circle-sm" style={scoreStyle(parseFloat(posAvg))}>
+                                <div className="score-num" style={{fontSize:13}}>{posAvg}</div>
+                              </div>
+                              <button className="btn btn-sm" onClick={() => { setRateModal({pos}); setR1(r.getsItDone); setR2(r.doesItRight); setR3(r.doesItEfficiently); setRNotes('') }}>
+                                <i className="ti ti-pencil" />
+                              </button>
+                            </div>
+                          ) : (
+                            <button className="btn btn-sm" onClick={() => { setRateModal({pos}); setR1(7); setR2(7); setR3(7); setRNotes('') }}>
+                              <i className="ti ti-star" /> Rate
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
 
         {!selectedEmp && (
-          <div className="empty-state"><i className="ti ti-school" /><div>Select an employee above to view their training profile.</div></div>
+          <div className="empty-state"><i className="ti ti-school" /><div>Select an employee above to view their training checklist.</div></div>
         )}
         </>
         )}
       </div>
 
-      {/* Rate modal */}
+      {/* Optional 1-10 rating modal */}
       {rateModal && (
         <div className="modal-overlay" onClick={e => e.target===e.currentTarget && setRateModal(null)}>
           <div className="modal">
@@ -241,7 +310,7 @@ export default function Training() {
               <button className="btn btn-sm" onClick={() => setRateModal(null)}><i className="ti ti-x" /></button>
             </div>
             <div className="modal-body">
-              <div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /><div>Rate each area 1–10. These three scores average into an overall position rating.</div></div>
+              <div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /><div>Rate each area 1–10. These three scores average into an overall position rating. This is separate from the Yes/No training checklist.</div></div>
 
               {[
                 ['Gets it done', 'Completes the task — meets throughput expectations', r1, setR1],
@@ -275,8 +344,8 @@ export default function Training() {
             </div>
             <div className="modal-footer">
               <button className="btn" onClick={() => setRateModal(null)}>Cancel</button>
-              <button className="btn btn-primary" onClick={handleSaveRating} disabled={saving}>
-                <i className="ti ti-device-floppy" /> {saving ? 'Saving…' : 'Save rating'}
+              <button className="btn btn-primary" onClick={handleSaveRating} disabled={savingRating}>
+                <i className="ti ti-device-floppy" /> {savingRating ? 'Saving…' : 'Save rating'}
               </button>
             </div>
           </div>

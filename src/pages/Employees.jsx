@@ -4,19 +4,7 @@ import Papa from 'papaparse'
 import { getEmployees, upsertEmployee } from '../lib/db'
 import { updateDoc, doc } from 'firebase/firestore'
 import { db } from '../lib/firebase'
-
-const LEVEL_LABEL = {
-  good_standing: 'Good standing',
-  coaching: 'Coaching',
-  written_warning: 'Written warning',
-  final_warning: 'Final warning',
-}
-const LEVEL_BADGE = {
-  good_standing: 'badge-ok',
-  coaching: 'badge-warn',
-  written_warning: 'badge-warn',
-  final_warning: 'badge-danger',
-}
+import { DISCIPLINE_LABEL as LEVEL_LABEL, DISCIPLINE_BADGE as LEVEL_BADGE } from '../lib/disciplineLevels'
 
 export default function Employees() {
   const [employees, setEmployees] = useState([])

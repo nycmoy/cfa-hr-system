@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { getEmployee, getAttendanceFlags, getDocuments, getRatings, getFollowUps, updateEmployee, getPositions } from '../lib/db'
+import { getEmployee, getAttendanceFlags, getDocuments, getRatings, getFollowUps, updateEmployee, getPositions, getTraining } from '../lib/db'
+import { DISCIPLINE_LABEL, DISCIPLINE_BADGE } from '../lib/disciplineLevels'
+import { applicablePositions } from '../lib/positionRules'
 
-const LEVEL_LABEL = { good_standing:'Good standing', coaching:'Coaching', written_warning:'Written warning', final_warning:'Final warning' }
-const LEVEL_BADGE = { good_standing:'badge-ok', coaching:'badge-warn', written_warning:'badge-warn', final_warning:'badge-danger' }
+const LEVEL_LABEL = DISCIPLINE_LABEL
+const LEVEL_BADGE = DISCIPLINE_BADGE
 const TYPE_LABEL = { noshow:'No-show', tier2:'10+ min late', tier1:'Tier 1 pattern', 'tier1-info':'Minor late', early:'Early departure', overage:'Overage' }
 const AREA_LABEL = { foh: 'Front of House', boh: 'Back of House', both: 'FOH + BOH' }
 
@@ -15,6 +17,7 @@ export default function EmployeeDetail() {
   const [ratings, setRatings] = useState([])
   const [followups, setFollowups] = useState([])
   const [positions, setPositions] = useState([])
+  const [training, setTraining] = useState([])
   const [tab, setTab] = useState('overview')
   const [loading, setLoading] = useState(true)
   const [showEdit, setShowEdit] = useState(false)
@@ -32,15 +35,16 @@ export default function EmployeeDetail() {
   }, [id])
 
   async function load() {
-    const [e, f, d, r, fu, p] = await Promise.all([
+    const [e, f, d, r, fu, p, tr] = await Promise.all([
       getEmployee(id),
       getAttendanceFlags(id),
       getDocuments(id),
       getRatings(id),
       getFollowUps(id),
       getPositions(),
+      getTraining(id),
     ])
-    setEmp(e); setFlags(f); setDocs(d); setRatings(r); setFollowups(fu); setPositions(p)
+    setEmp(e); setFlags(f); setDocs(d); setRatings(r); setFollowups(fu); setPositions(p); setTraining(tr)
     setLoading(false)
   }
 
@@ -272,45 +276,104 @@ export default function EmployeeDetail() {
           )}
 
           {/* TRAINING TAB */}
-          {tab === 'training' && (
-            <div>
-              <div style={{marginBottom:12,display:'flex',justifyContent:'flex-end'}}>
-                <Link to={`/training?empId=${id}`} className="btn btn-primary btn-sm"><i className="ti ti-pencil" /> Update training</Link>
-              </div>
-              {Object.keys(ratingsByPos).length === 0 ? (
-                <div className="empty-state"><i className="ti ti-school" /><div>No training ratings yet. <Link to={`/training?empId=${id}`}>Add training status →</Link></div></div>
-              ) : (
-                <div className="pos-grid">
-                  {Object.entries(ratingsByPos).map(([posId, rs]) => {
-                    const latest = rs[0]
-                    const avg = ((latest.getsItDone + latest.doesItRight + latest.doesItEfficiently) / 3).toFixed(1)
-                    const sc = scoreClass(parseFloat(avg))
-                    return (
-                      <div key={posId} className="pos-card certified">
-                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
-                          <div style={{fontSize:13,fontWeight:500}}>{latest.positionName}</div>
-                          <span className="badge badge-ok">Rated</span>
-                        </div>
-                        {[['Gets it done',latest.getsItDone],['Does it right',latest.doesItRight],['Does it efficiently',latest.doesItEfficiently]].map(([l,v]) => (
-                          <div key={l} className="rating-row">
-                            <div className="rating-label" style={{fontSize:11}}>{l}</div>
-                            <div className="rating-track"><div className="rating-fill" style={{width:`${v*10}%`,background:ratingColor(v)}} /></div>
-                            <div className="rating-val">{v}</div>
-                          </div>
-                        ))}
-                        <div style={{display:'flex',alignItems:'center',gap:8,marginTop:10,paddingTop:10,borderTop:'0.5px solid var(--border)'}}>
-                          <div className="score-circle score-circle-sm" style={{...sc}}>
-                            <div className="score-num" style={{fontSize:14}}>{avg}</div>
-                          </div>
-                          <div style={{fontSize:12,color:'var(--text-sec)'}}>Overall avg</div>
-                        </div>
-                      </div>
-                    )
-                  })}
+          {tab === 'training' && (() => {
+            const completedSet = new Set(training.filter(t => t.completed).map(t => t.positionId))
+            const applicable = applicablePositions(emp, positions)
+            const completedList = applicable.filter(p => completedSet.has(p.id))
+            const neededList = applicable.filter(p => !completedSet.has(p.id))
+            const trainingByPosId = Object.fromEntries(training.map(t => [t.positionId, t]))
+
+            return (
+              <div>
+                <div style={{marginBottom:12,display:'flex',justifyContent:'flex-end'}}>
+                  <Link to={`/training?empId=${id}`} className="btn btn-primary btn-sm"><i className="ti ti-pencil" /> Update training</Link>
                 </div>
-              )}
-            </div>
-          )}
+
+                <div className="metric-grid metric-grid-3" style={{marginBottom:16}}>
+                  <div className="metric"><div className="metric-label">Applicable positions</div><div className="metric-value">{applicable.length}</div></div>
+                  <div className="metric"><div className="metric-label">Completed</div><div className="metric-value" style={{color:'var(--green)'}}>{completedList.length}</div></div>
+                  <div className="metric"><div className="metric-label">Still needed</div><div className="metric-value" style={{color:neededList.length?'var(--amber-txt)':'inherit'}}>{neededList.length}</div></div>
+                </div>
+
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+                  <div className="card" style={{padding:0}}>
+                    <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                      <span className="card-title" style={{marginBottom:0,color:'var(--green-txt)'}}><i className="ti ti-circle-check" /> Training completed</span>
+                    </div>
+                    {completedList.length === 0 ? (
+                      <div className="empty-state" style={{padding:24}}><i className="ti ti-school" /><div>No completed training yet.</div></div>
+                    ) : (
+                      completedList.map(pos => {
+                        const t = trainingByPosId[pos.id]
+                        return (
+                          <div key={pos.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                            <i className="ti ti-check" style={{color:'var(--green)'}} aria-hidden="true" />
+                            <div style={{flex:1}}>
+                              <div style={{fontSize:13,fontWeight:500}}>{pos.name}</div>
+                            </div>
+                            <span className="mono">{t?.completedDate ? new Date(t.completedDate).toLocaleDateString() : '—'}</span>
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+
+                  <div className="card" style={{padding:0}}>
+                    <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                      <span className="card-title" style={{marginBottom:0,color:'var(--amber-txt)'}}><i className="ti ti-list-check" /> Training needed</span>
+                    </div>
+                    {neededList.length === 0 ? (
+                      <div className="empty-state" style={{padding:24}}><i className="ti ti-circle-check" style={{color:'var(--green)'}} /><div>Fully trained on all applicable positions.</div></div>
+                    ) : (
+                      neededList.map(pos => (
+                        <div key={pos.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                          <i className="ti ti-circle-dashed" style={{color:'var(--text-ter)'}} aria-hidden="true" />
+                          <div style={{flex:1}}>
+                            <div style={{fontSize:13,fontWeight:500}}>{pos.name}</div>
+                          </div>
+                          <Link to={`/training?empId=${id}`} className="btn btn-sm">Mark complete</Link>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {Object.keys(ratingsByPos).length > 0 && (
+                  <div style={{marginTop:16}}>
+                    <div style={{fontSize:11,fontWeight:500,color:'var(--text-sec)',textTransform:'uppercase',letterSpacing:'.05em',marginBottom:8}}>Performance ratings (optional, separate from completion)</div>
+                    <div className="pos-grid">
+                      {Object.entries(ratingsByPos).map(([posId, rs]) => {
+                        const latest = rs[0]
+                        const ravg = ((latest.getsItDone + latest.doesItRight + latest.doesItEfficiently) / 3).toFixed(1)
+                        const sc = scoreClass(parseFloat(ravg))
+                        return (
+                          <div key={posId} className="pos-card certified">
+                            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+                              <div style={{fontSize:13,fontWeight:500}}>{latest.positionName}</div>
+                              <span className="badge badge-ok">Rated</span>
+                            </div>
+                            {[['Gets it done',latest.getsItDone],['Does it right',latest.doesItRight],['Does it efficiently',latest.doesItEfficiently]].map(([l,v]) => (
+                              <div key={l} className="rating-row">
+                                <div className="rating-label" style={{fontSize:11}}>{l}</div>
+                                <div className="rating-track"><div className="rating-fill" style={{width:`${v*10}%`,background:ratingColor(v)}} /></div>
+                                <div className="rating-val">{v}</div>
+                              </div>
+                            ))}
+                            <div style={{display:'flex',alignItems:'center',gap:8,marginTop:10,paddingTop:10,borderTop:'0.5px solid var(--border)'}}>
+                              <div className="score-circle score-circle-sm" style={{...sc}}>
+                                <div className="score-num" style={{fontSize:14}}>{ravg}</div>
+                              </div>
+                              <div style={{fontSize:12,color:'var(--text-sec)'}}>Overall avg</div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
 
           {/* RATINGS TAB */}
           {tab === 'ratings' && (

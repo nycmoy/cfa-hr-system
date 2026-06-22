@@ -1,34 +1,46 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
-import { getEmployees, getEmployee, createDocument, getDocuments, updateDocument } from '../lib/db'
-import { generateWrittenWarning, generateFinalWarning, generateCoachingNote } from '../lib/pdfGenerator'
-
-const DOC_TYPES = [
-  { value: 'coaching', label: 'Coaching note', counts: false, badge: 'badge-info' },
-  { value: 'attendance_concern', label: 'Attendance concern', counts: false, badge: 'badge-info' },
-  { value: 'written_warning', label: 'Written warning', counts: true, badge: 'badge-warn' },
-  { value: 'final_warning', label: 'Final warning', counts: true, badge: 'badge-danger' },
-  { value: 'policy_reminder', label: 'Policy reminder', counts: false, badge: 'badge-gray' },
-]
+import { getEmployees, getEmployee, createDocument, getDocuments, updateDocument, getAttendanceFlags, updateFlagStatus } from '../lib/db'
+import { generateWrittenWarning, generateFinalWarning, generateCoachingNote, generateVerbalWarning, generateTerminationNotice } from '../lib/pdfGenerator'
+import { DOC_TYPES, DOC_TYPE_META } from '../lib/disciplineLevels'
 
 export default function Documentation() {
   const [searchParams] = useSearchParams()
   const preEmpId = searchParams.get('empId')
+  const preFlagId = searchParams.get('flagId')
+  const preFlagType = searchParams.get('type')
 
   const [employees, setEmployees] = useState([])
   const [allDocs, setAllDocs] = useState([])
   const [showForm, setShowForm] = useState(!!preEmpId)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [sourceFlag, setSourceFlag] = useState(null)
 
   // Form state
   const [empId, setEmpId] = useState(preEmpId || '')
   const [empName, setEmpName] = useState('')
-  const [docType, setDocType] = useState('written_warning')
+  const [docType, setDocType] = useState(preFlagType === 'tier2' || preFlagType === 'tier1' || preFlagType === 'noshow' ? 'verbal_warning' : 'written_warning')
   const [date, setDate] = useState(new Date().toISOString().split('T')[0])
   const [notes, setNotes] = useState('')
   const [signatureStatus, setSignatureStatus] = useState('pending')
   const [deviationReason, setDeviationReason] = useState('')
+
+  // Attendance-specific fields (per your documentation format)
+  const [incidentDate, setIncidentDate] = useState('')
+  const [scheduledTime, setScheduledTime] = useState('')
+  const [actualTime, setActualTime] = useState('')
+  const [minutesLate, setMinutesLate] = useState('')
+
+  // Disciplinary notice form fields — match the exact paper form
+  const [operatorName, setOperatorName] = useState('Nyc Moy')
+  const [witnessNames, setWitnessNames] = useState('')
+  const [priorWarnings, setPriorWarnings] = useState('no')
+  const [priorWarningsDetail, setPriorWarningsDetail] = useState('')
+  const [policyViolation, setPolicyViolation] = useState('yes')
+  const [correctiveAction, setCorrectiveAction] = useState('')
+  const [consequences, setConsequences] = useState('')
+  const [teamMemberStatement, setTeamMemberStatement] = useState('')
 
   // Final warning extras
   const [hoursBefore, setHoursBefore] = useState('')
@@ -36,19 +48,45 @@ export default function Documentation() {
   const [hoursDuration, setHoursDuration] = useState('')
   const [reviewDate, setReviewDate] = useState('')
 
-  const docTypeMeta = DOC_TYPES.find(d => d.value === docType)
+  const docTypeMeta = DOC_TYPE_META[docType] || {}
 
   useEffect(() => {
-    Promise.all([getEmployees()]).then(([e]) => {
+    Promise.all([getEmployees()]).then(async ([e]) => {
       setEmployees(e)
       if (preEmpId) {
         const found = e.find(x => x.id === preEmpId)
         if (found) setEmpName(found.name)
       }
+      // Pull the actual flag data so we can pre-fill date/scheduled/actual/late-minutes
+      if (preEmpId && preFlagId) {
+        const flags = await getAttendanceFlags(preEmpId)
+        const flag = flags.find(f => f.id === preFlagId)
+        if (flag) {
+          setSourceFlag(flag)
+          setIncidentDate(flag.date || '')
+          setMinutesLate(flag.minutes ? String(flag.minutes) : '')
+          setScheduledTime(flag.schedStart || '')
+          setActualTime(flag.workStart || '')
+          setNotes(flag.detail || '')
+          setCorrectiveAction('Team member needs to clock in on time for all scheduled shifts.')
+          // Suggest the next-step consequence based on which warning is being issued
+          const initialType = preFlagType === 'tier2' || preFlagType === 'tier1' || preFlagType === 'noshow' ? 'verbal_warning' : 'written_warning'
+          if (initialType === 'verbal_warning') setConsequences('Next step would be a Written Warning.')
+          else setConsequences('Next step would be a Final Written Warning with reduced hours.')
+        }
+      }
       setLoading(false)
     })
     loadAllDocs()
   }, [])
+
+  // Keep the suggested consequence text in sync if the manager changes the doc type
+  useEffect(() => {
+    if (!preFlagId) return // only auto-suggest when arriving from a flag; don't fight manual edits otherwise
+    if (docType === 'verbal_warning' && !consequences) setConsequences('Next step would be a Written Warning.')
+    if (docType === 'written_warning' && !consequences) setConsequences('Next step would be a Final Written Warning with reduced hours.')
+    if (docType === 'final_warning' && !consequences) setConsequences('Next step would be termination.')
+  }, [docType])
 
   async function loadAllDocs() {
     const emps = await getEmployees()
@@ -70,16 +108,37 @@ export default function Documentation() {
         before: hoursBefore, after: hoursAfter, duration: hoursDuration, reviewDate
       } : null
 
+      const incidentDetail = {
+        date: incidentDate || (sourceFlag?.date) || '',
+        scheduledTime,
+        actualTime,
+        minutesLate,
+      }
+      const hasIncidentDetail = incidentDetail.date || incidentDetail.scheduledTime || incidentDetail.actualTime || incidentDetail.minutesLate
+
       // Generate PDF
       let pdf = null
       const resolvedEmpNameForPdf = empName || employees.find(e => e.id === empId)?.name || 'Unknown'
       const emp = { name: resolvedEmpNameForPdf }
-      if (docType === 'written_warning') {
-        pdf = generateWrittenWarning(emp, [], notes, docId)
+      const noticeFields = {
+        operatorName, witnessNames,
+        incidentDetail,
+        priorWarnings, priorWarningsDetail,
+        policyViolation,
+        correctiveAction, consequences, teamMemberStatement,
+        notes, signatureStatus,
+      }
+
+      if (docType === 'verbal_warning') {
+        pdf = generateVerbalWarning(emp, incidentDetail, notes, docId, noticeFields)
+      } else if (docType === 'written_warning') {
+        pdf = generateWrittenWarning(emp, incidentDetail, notes, docId, noticeFields)
       } else if (docType === 'final_warning') {
-        pdf = generateFinalWarning(emp, [], notes, hoursData, docId)
-      } else if (docType === 'coaching' || docType === 'attendance_concern') {
-        pdf = generateCoachingNote(emp, docType === 'coaching' ? 'General coaching' : 'Attendance concern', notes, docId)
+        pdf = generateFinalWarning(emp, incidentDetail, notes, hoursData, docId, noticeFields)
+      } else if (docType === 'termination') {
+        pdf = generateTerminationNotice(emp, notes, docId, noticeFields)
+      } else if (docType === 'coaching' || docType === 'documentation_only' || docType === 'policy_reminder') {
+        pdf = generateCoachingNote(emp, docTypeMeta?.label || 'Documentation', notes, docId)
       }
 
       if (pdf) pdf.save(`${docId}.pdf`)
@@ -93,13 +152,41 @@ export default function Documentation() {
         notes: notes || '',
         signatureStatus,
         countsTowardDiscipline: docTypeMeta?.counts || false,
+        disciplineLevel: docTypeMeta?.disciplineLevel || null,
         deviationReason: deviationReason || '',
         employeeName: resolvedEmpName,
+        operatorName: operatorName || '',
+        witnessNames: witnessNames || '',
+        priorWarnings,
+        priorWarningsDetail: priorWarningsDetail || '',
+        policyViolation,
+        correctiveAction: correctiveAction || '',
+        consequences: consequences || '',
+        teamMemberStatement: teamMemberStatement || '',
       }
-      // Only attach hoursData if it actually has values (avoid undefined fields)
       if (hoursData) payload.hoursData = hoursData
+      if (hasIncidentDetail) payload.incidentDetail = incidentDetail
+      if (preFlagId) { payload.relatedFlagId = preFlagId; payload.relatedFlagType = preFlagType }
 
       await createDocument(empId, payload)
+
+      // If discipline level advances, reflect it on the employee record
+      if (docTypeMeta?.disciplineLevel) {
+        const { updateEmployee } = await import('../lib/db')
+        const updates = {
+          disciplineLevel: docTypeMeta.disciplineLevel,
+          leadershipStatus: docTypeMeta.disciplineLevel,
+        }
+        if (docTypeMeta.disciplineLevel === 'final_warning' && reviewDate) {
+          updates.finalWarningReviewDate = reviewDate
+        }
+        await updateEmployee(empId, updates)
+      }
+
+      // Mark the originating flag as documented so it drops out of the pending queue
+      if (preFlagId) {
+        await updateFlagStatus(empId, preFlagId, 'documented', `Documented via ${docTypeMeta?.label || docType} (${docId})`)
+      }
 
       await loadAllDocs()
       setShowForm(false)
@@ -195,6 +282,88 @@ export default function Documentation() {
                 <div className="danger-box"><i className="ti ti-alert-triangle" aria-hidden="true" /><div>This documentation <strong>will count toward discipline status</strong>. Leadership must approve before issuing.</div></div>
               ) : (
                 <div className="info-box"><i className="ti ti-info-circle" aria-hidden="true" /><div>This documentation will <strong>NOT</strong> advance discipline status. It appears on the timeline as a coaching record only.</div></div>
+              )}
+
+              {['verbal_warning','written_warning','final_warning','termination'].includes(docType) && (
+                <div style={{background:'var(--bg)',borderRadius:'var(--radius)',padding:14,marginBottom:14}}>
+                  <div style={{fontSize:12,fontWeight:500,color:'var(--text-sec)',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:10}}>Disciplinary notice details</div>
+
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+                    <div className="form-group" style={{margin:0}}>
+                      <label className="form-label">Operator / Supervisor name</label>
+                      <input type="text" value={operatorName} onChange={e=>setOperatorName(e.target.value)} />
+                    </div>
+                    <div className="form-group" style={{margin:0}}>
+                      <label className="form-label">Witness name(s) — if any</label>
+                      <input type="text" value={witnessNames} onChange={e=>setWitnessNames(e.target.value)} placeholder="Optional" />
+                    </div>
+                  </div>
+
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+                    <div className="form-group" style={{margin:0}}>
+                      <label className="form-label">Prior warnings on this subject?</label>
+                      <select value={priorWarnings} onChange={e=>setPriorWarnings(e.target.value)}>
+                        <option value="no">No</option>
+                        <option value="yes">Yes</option>
+                      </select>
+                    </div>
+                    {priorWarnings === 'yes' && (
+                      <div className="form-group" style={{margin:0}}>
+                        <label className="form-label">How many and what kind?</label>
+                        <input type="text" value={priorWarningsDetail} onChange={e=>setPriorWarningsDetail(e.target.value)} placeholder="e.g. 1 Verbal Warning on 5/1/26" />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Violation of written Unit policy?</label>
+                    <select value={policyViolation} onChange={e=>setPolicyViolation(e.target.value)}>
+                      <option value="yes">Yes — Punctuality and Attendance policy</option>
+                      <option value="no">No</option>
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Corrective action to be taken by team member</label>
+                    <textarea value={correctiveAction} onChange={e=>setCorrectiveAction(e.target.value)} placeholder="e.g. Guillermo needs to clock in on time for his scheduled shifts" style={{minHeight:56}} />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Consequences of failure to improve</label>
+                    <textarea value={consequences} onChange={e=>setConsequences(e.target.value)} placeholder="e.g. Next step would be reduced hours" style={{minHeight:56}} />
+                  </div>
+
+                  <div className="form-group" style={{marginBottom:0}}>
+                    <label className="form-label">Team member statement (optional)</label>
+                    <textarea value={teamMemberStatement} onChange={e=>setTeamMemberStatement(e.target.value)} placeholder="Leave blank if completing in person — employee can write/sign on the printed copy" style={{minHeight:56}} />
+                  </div>
+                </div>
+              )}
+
+              {['verbal_warning','written_warning','final_warning'].includes(docType) && (
+                <div style={{background:'var(--bg)',borderRadius:'var(--radius)',padding:14,marginBottom:14}}>
+                  <div style={{fontSize:12,fontWeight:500,color:'var(--text-sec)',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:10}}>Attendance incident detail</div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+                    <div className="form-group" style={{margin:0}}>
+                      <label className="form-label">Incident date</label>
+                      <input type="text" value={incidentDate} onChange={e=>setIncidentDate(e.target.value)} placeholder="MM/DD/YYYY" />
+                    </div>
+                    <div className="form-group" style={{margin:0}}>
+                      <label className="form-label">Minutes late</label>
+                      <input type="text" value={minutesLate} onChange={e=>setMinutesLate(e.target.value)} placeholder="14" />
+                    </div>
+                  </div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                    <div className="form-group" style={{margin:0}}>
+                      <label className="form-label">Scheduled time</label>
+                      <input type="text" value={scheduledTime} onChange={e=>setScheduledTime(e.target.value)} placeholder="e.g. 7:00 AM" />
+                    </div>
+                    <div className="form-group" style={{margin:0}}>
+                      <label className="form-label">Actual arrival time</label>
+                      <input type="text" value={actualTime} onChange={e=>setActualTime(e.target.value)} placeholder="e.g. 7:14 AM" />
+                    </div>
+                  </div>
+                </div>
               )}
 
               {docType === 'final_warning' && (

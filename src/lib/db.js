@@ -180,6 +180,35 @@ export async function deletePosition(id) {
   await deleteDoc(doc(db, 'positions', id))
 }
 
+// ─── TRAINING (yes/no completion + editable date — distinct from ratings) ────
+// One doc per employee per position: { positionId, positionName, completed, completedDate }
+export async function setTrainingStatus(employeeId, positionId, positionName, completed, completedDate) {
+  const id = positionId
+  const ref = doc(db, 'employees', employeeId, 'training', id)
+  await setDoc(ref, stripUndefined({
+    positionId,
+    positionName,
+    completed: !!completed,
+    completedDate: completed ? (completedDate || new Date().toISOString().split('T')[0]) : null,
+    updatedAt: serverTimestamp(),
+  }))
+}
+
+export async function getTraining(employeeId) {
+  const snap = await getDocs(collection(db, 'employees', employeeId, 'training'))
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+}
+
+export async function getAllTraining() {
+  const emps = await getEmployees()
+  const all = []
+  for (const emp of emps) {
+    const t = await getTraining(emp.id)
+    t.forEach(item => all.push({ ...item, employeeId: emp.id, employeeName: emp.name }))
+  }
+  return all
+}
+
 // ─── RATINGS ─────────────────────────────────────────────────────────────────
 export async function saveRating(employeeId, positionId, rating) {
   const ratingId = `${positionId}_${Date.now()}`

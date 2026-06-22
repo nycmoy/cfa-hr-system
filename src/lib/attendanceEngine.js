@@ -48,10 +48,11 @@ export function parseCSVRow(row) {
 
 export function analyzeEmployee(shifts) {
   const tier2Flags = []
-  const tier1ByWindow = {}
+  const tier1Lates = [] // flat list — grouped into rolling windows after the main loop
   const earlyFlags = []
   const overageFlags = []
   const noshowFlags = []
+  const absenceDates = [] // for excessive-absence (3+ in rolling 3mo) evaluation
 
   for (const s of shifts) {
     const lateMins = s.startVar < 0 ? Math.abs(s.startVar) : 0
@@ -70,6 +71,9 @@ export function analyzeEmployee(shifts) {
         severity: 'critical',
         status: 'pending',
       })
+      // Treat as an absence for the excessive-absence evaluation, regardless
+      // of whether it's later excused — the flag exists to prompt review.
+      absenceDates.push({ date: s.workdayStr, workday: s.workday })
     } else if (lateMins >= TIER2_MIN) {
       tier2Flags.push({
         type: 'tier2',
@@ -82,13 +86,12 @@ export function analyzeEmployee(shifts) {
         severity: 'high',
         status: 'pending',
       })
-    } else if (lateMins >= TIER1_MIN) {
-      if (!tier1ByWindow[s.windowIdx]) tier1ByWindow[s.windowIdx] = []
-      tier1ByWindow[s.windowIdx].push({
+    } else if (lateMins >= TIER1_MIN && lateMins <= TIER1_MAX) {
+      // Collect every 5-9.9 min late individually; rolling-window grouping happens after the loop
+      tier1Lates.push({
         date: s.workdayStr,
         workday: s.workday,
         minutes: lateMins,
-        windowLabel: s.windowLabel,
       })
     }
 
@@ -117,31 +120,84 @@ export function analyzeEmployee(shifts) {
     }
   }
 
-  const tier1Docs = []
-  const tier1InfoOnly = [] // BELOW threshold — informational only, NOT saved to Firestore
+  // ── TIER 1: fixed 2-week PAYROLL PERIODS, anchored to Jun 7, 2026 ─────────
+  // Per the handbook, this is a window-based system tied to fixed payroll
+  // periods (Jun 7-20, Jun 21-Jul 4, ...) — NOT a true rolling 14-day window.
+  // A late on the last day of one period and the first day of the next are
+  // in DIFFERENT periods and do not combine, even though they're adjacent.
+  const tier1ByPeriod = {}
+  for (const l of tier1Lates) {
+    const idx = getWindowIndex(l.workday)
+    if (!tier1ByPeriod[idx]) tier1ByPeriod[idx] = []
+    tier1ByPeriod[idx].push(l)
+  }
 
-  for (const [widx, lates] of Object.entries(tier1ByWindow)) {
-    const widxInt = parseInt(widx)
-    // Use the start of the window as the workday for Firestore ordering
-    const windowStart = windowStartDate(widxInt)
-    const entry = {
-      windowIdx: widxInt,
-      windowLabel: lates[0].windowLabel,
-      count: lates.length,
-      lates,
-      // workday field needed for Firestore orderBy
-      workday: windowStart,
-      date: lates[0].date, // first late date for display
-      detail: `${lates.length} minor late${lates.length > 1 ? 's' : ''} (5–9 min) in window ${lates[0].windowLabel}`,
-      status: 'pending',
-    }
+  const tier1Docs = []
+  const tier1InfoOnly = []
+
+  for (const [idxStr, lates] of Object.entries(tier1ByPeriod)) {
+    const idx = parseInt(idxStr)
+    const periodLabel = windowLabel(idx)
+    lates.sort((a, b) => a.workday - b.workday)
 
     if (lates.length >= TIER1_THRESHOLD) {
-      // TRIGGERS documentation — save to Firestore
-      tier1Docs.push({ ...entry, type: 'tier1', severity: 'medium' })
+      tier1Docs.push({
+        type: 'tier1',
+        windowIdx: idx,
+        windowLabel: periodLabel,
+        count: lates.length,
+        lates,
+        workday: lates[0].workday,
+        date: lates[0].date,
+        detail: `${lates.length} minor lates (5–9.9 min) within payroll period ${periodLabel} — triggers documentation`,
+        severity: 'medium',
+        status: 'pending',
+      })
     } else {
-      // Below threshold — informational only, do NOT save to Firestore
-      tier1InfoOnly.push({ ...entry, type: 'tier1-info', severity: 'info' })
+      tier1InfoOnly.push({
+        type: 'tier1-info',
+        windowIdx: idx,
+        windowLabel: periodLabel,
+        count: lates.length,
+        lates,
+        workday: lates[0].workday,
+        date: lates[0].date,
+        detail: `${lates.length} minor late in payroll period ${periodLabel} — below threshold, needs ${TIER1_THRESHOLD - lates.length} more in this period to trigger documentation`,
+        severity: 'info',
+        status: 'pending',
+      })
+    }
+  }
+
+  // ── EXCESSIVE ABSENCES: 3+ absences (excused or not) in a TRUE rolling 3 months ──
+  // Unlike Tier 1 lates, this is not tied to fixed payroll periods — it's a
+  // genuine rolling 90-day lookback from each absence.
+  const ABSENCE_WINDOW_DAYS = 90
+  const ABSENCE_THRESHOLD = 3
+  const excessiveAbsenceFlags = []
+  const sortedAbsences = [...absenceDates].sort((a, b) => a.workday - b.workday)
+  const absenceFlagged = new Set()
+
+  for (let i = 0; i < sortedAbsences.length; i++) {
+    if (absenceFlagged.has(sortedAbsences[i].date)) continue
+    const anchor = sortedAbsences[i]
+    const windowEnd = new Date(anchor.workday.getTime() + (ABSENCE_WINDOW_DAYS - 1) * 24 * 60 * 60 * 1000)
+    const group = sortedAbsences.filter(a =>
+      a.workday >= anchor.workday && a.workday <= windowEnd && !absenceFlagged.has(a.date)
+    )
+    if (group.length >= ABSENCE_THRESHOLD) {
+      group.forEach(a => absenceFlagged.add(a.date))
+      const fmt = d => `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`
+      excessiveAbsenceFlags.push({
+        type: 'excessive_absence',
+        workday: anchor.workday,
+        date: anchor.date,
+        count: group.length,
+        absences: group,
+        detail: `${group.length} absences within a rolling 3-month period (${fmt(anchor.workday)}–${fmt(windowEnd)}) — flagged for evaluation regardless of excused status`,
+        severity: 'medium',
+        status: 'pending',
+      })
     }
   }
 
@@ -154,8 +210,9 @@ export function analyzeEmployee(shifts) {
     noshow: noshowFlags,
     early: earlyFlags,
     overage: overageFlags,
+    excessiveAbsence: excessiveAbsenceFlags,
     docCount,
     // Only flags that get saved to Firestore:
-    flagsToSave: [...noshowFlags, ...tier2Flags, ...tier1Docs, ...earlyFlags, ...overageFlags],
+    flagsToSave: [...noshowFlags, ...tier2Flags, ...tier1Docs, ...earlyFlags, ...overageFlags, ...excessiveAbsenceFlags],
   }
 }
