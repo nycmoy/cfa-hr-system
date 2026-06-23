@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { getEmployees, getEmployee, createDocument, getDocuments, updateDocument, getAttendanceFlags, updateFlagStatus } from '../lib/db'
 import { generateWrittenWarning, generateFinalWarning, generateCoachingNote, generateVerbalWarning, generateTerminationNotice } from '../lib/pdfGenerator'
-import { DOC_TYPES, DOC_TYPE_META } from '../lib/disciplineLevels'
+import { DOC_TYPES, DOC_TYPE_META, DISCIPLINE_LABEL, nextDisciplineStep } from '../lib/disciplineLevels'
+import { summarizeFlagHistory } from '../lib/attendanceEngine'
 
 export default function Documentation() {
   const [searchParams] = useSearchParams()
@@ -16,6 +17,9 @@ export default function Documentation() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [sourceFlag, setSourceFlag] = useState(null)
+  const [historySummary, setHistorySummary] = useState(null) // { absenceSummary, lateSummary, combinedSummary, ... }
+  const [currentLevel, setCurrentLevel] = useState('good_standing')
+  const [recommendedLevel, setRecommendedLevel] = useState('good_standing')
 
   // Form state
   const [empId, setEmpId] = useState(preEmpId || '')
@@ -56,6 +60,7 @@ export default function Documentation() {
       if (preEmpId) {
         const found = e.find(x => x.id === preEmpId)
         if (found) setEmpName(found.name)
+        await loadEmployeeContext(preEmpId, found)
       }
       // Pull the actual flag data so we can pre-fill date/scheduled/actual/late-minutes
       if (preEmpId && preFlagId) {
@@ -69,10 +74,6 @@ export default function Documentation() {
           setActualTime(flag.workStart || '')
           setNotes(flag.detail || '')
           setCorrectiveAction('Team member needs to clock in on time for all scheduled shifts.')
-          // Suggest the next-step consequence based on which warning is being issued
-          const initialType = preFlagType === 'tier2' || preFlagType === 'tier1' || preFlagType === 'noshow' ? 'verbal_warning' : 'written_warning'
-          if (initialType === 'verbal_warning') setConsequences('Next step would be a Written Warning.')
-          else setConsequences('Next step would be a Final Written Warning with reduced hours.')
         }
       }
       setLoading(false)
@@ -80,12 +81,65 @@ export default function Documentation() {
     loadAllDocs()
   }, [])
 
-  // Keep the suggested consequence text in sync if the manager changes the doc type
+  // Fetches an employee's full flag history + current discipline level, then
+  // computes everything the form auto-fills: absence/late counts + dates,
+  // and the recommended next rung on the discipline ladder. Always editable
+  // afterward — this only sets sensible defaults, never locks anything.
+  async function loadEmployeeContext(targetEmpId, employeeRecord) {
+    const [flags, empDetail] = await Promise.all([
+      getAttendanceFlags(targetEmpId),
+      employeeRecord ? Promise.resolve(employeeRecord) : getEmployee(targetEmpId),
+    ])
+    const summary = summarizeFlagHistory(flags)
+    setHistorySummary(summary)
+
+    const level = empDetail?.leadershipStatus || empDetail?.disciplineLevel || 'good_standing'
+    setCurrentLevel(level)
+    const suggested = nextDisciplineStep(level)
+    setRecommendedLevel(suggested)
+
+    // Pre-fill prior-warnings fields straight from the actual history —
+    // editable afterward, never locked.
+    if (level !== 'good_standing') {
+      setPriorWarnings('yes')
+      setPriorWarningsDetail(`${DISCIPLINE_LABEL[level]} on file. ${summary.combinedSummary}`.trim())
+    } else if (summary.combinedSummary) {
+      setPriorWarnings('yes')
+      setPriorWarningsDetail(summary.combinedSummary)
+    } else {
+      setPriorWarnings('no')
+      setPriorWarningsDetail('')
+    }
+
+    // Only auto-select the doc type when we didn't already arrive with one
+    // implied by a specific flag (preserve existing flag-driven behavior).
+    if (!preFlagId) {
+      setDocType(suggested === 'good_standing' ? 'verbal_warning' : suggested)
+    }
+
+    // Suggest the consequence text for whichever level is being issued
+    const consequenceFor = {
+      verbal_warning: 'Next step would be a Written Warning.',
+      written_warning: 'Next step would be a Final Written Warning with reduced hours.',
+      final_warning: 'Next step would be termination.',
+      termination: 'This is the final step in the progressive discipline process.',
+    }
+    setConsequences(consequenceFor[suggested] || '')
+  }
+
+  // If the manager manually changes the doc type after the auto-suggestion,
+  // keep the consequence text reasonably in sync — but never overwrite text
+  // they've already started editing themselves beyond the auto-fill.
+  const [consequencesTouched, setConsequencesTouched] = useState(false)
   useEffect(() => {
-    if (!preFlagId) return // only auto-suggest when arriving from a flag; don't fight manual edits otherwise
-    if (docType === 'verbal_warning' && !consequences) setConsequences('Next step would be a Written Warning.')
-    if (docType === 'written_warning' && !consequences) setConsequences('Next step would be a Final Written Warning with reduced hours.')
-    if (docType === 'final_warning' && !consequences) setConsequences('Next step would be termination.')
+    if (consequencesTouched) return
+    const consequenceFor = {
+      verbal_warning: 'Next step would be a Written Warning.',
+      written_warning: 'Next step would be a Final Written Warning with reduced hours.',
+      final_warning: 'Next step would be termination.',
+      termination: 'This is the final step in the progressive discipline process.',
+    }
+    if (consequenceFor[docType]) setConsequences(consequenceFor[docType])
   }, [docType])
 
   async function loadAllDocs() {
@@ -180,6 +234,12 @@ export default function Documentation() {
         if (docTypeMeta.disciplineLevel === 'final_warning' && reviewDate) {
           updates.finalWarningReviewDate = reviewDate
         }
+        // Termination is a leadership decision already made by filing this
+        // documentation — mark the employee inactive so they drop off the
+        // active dashboard/discipline views rather than lingering there.
+        if (docTypeMeta.disciplineLevel === 'termination') {
+          updates.status = 'inactive'
+        }
         await updateEmployee(empId, updates)
       }
 
@@ -256,10 +316,13 @@ export default function Documentation() {
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
                 <div className="form-group">
                   <label className="form-label">Employee</label>
-                  <select value={empId} onChange={e => {
-                    setEmpId(e.target.value)
-                    const found = employees.find(x => x.id === e.target.value)
+                  <select value={empId} onChange={async e => {
+                    const newId = e.target.value
+                    setEmpId(newId)
+                    const found = employees.find(x => x.id === newId)
                     setEmpName(found?.name || '')
+                    setConsequencesTouched(false)
+                    if (newId) await loadEmployeeContext(newId, found)
                   }}>
                     <option value="">— select —</option>
                     {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
@@ -270,6 +333,24 @@ export default function Documentation() {
                   <input type="date" value={date} onChange={e => setDate(e.target.value)} />
                 </div>
               </div>
+
+              {historySummary && (historySummary.absenceCount > 0 || historySummary.lateCount > 0 || currentLevel !== 'good_standing') && (
+                <div style={{background:'var(--amber-lt)',border:'0.5px solid #FAC775',borderRadius:'var(--radius)',padding:12,marginBottom:14}}>
+                  <div style={{fontSize:11,fontWeight:500,color:'var(--amber-txt)',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:6}}>
+                    <i className="ti ti-history" aria-hidden="true" /> Attendance history on file
+                  </div>
+                  {historySummary.combinedSummary && (
+                    <div style={{fontSize:13,color:'var(--amber-txt)',marginBottom:6}}>{historySummary.combinedSummary}</div>
+                  )}
+                  <div style={{fontSize:12,color:'var(--amber-txt)'}}>
+                    Current level: <strong>{DISCIPLINE_LABEL[currentLevel]}</strong>
+                    {' → '}Recommended next step: <strong>{DISCIPLINE_LABEL[recommendedLevel] || recommendedLevel}</strong>
+                  </div>
+                  <div style={{fontSize:11,color:'var(--amber-txt)',marginTop:6,fontStyle:'italic'}}>
+                    Auto-filled below — all fields remain editable. Leadership makes the final call.
+                  </div>
+                </div>
+              )}
 
               <div className="form-group">
                 <label className="form-label">Documentation type</label>
@@ -330,7 +411,7 @@ export default function Documentation() {
 
                   <div className="form-group">
                     <label className="form-label">Consequences of failure to improve</label>
-                    <textarea value={consequences} onChange={e=>setConsequences(e.target.value)} placeholder="e.g. Next step would be reduced hours" style={{minHeight:56}} />
+                    <textarea value={consequences} onChange={e=>{setConsequences(e.target.value); setConsequencesTouched(true)}} placeholder="e.g. Next step would be reduced hours" style={{minHeight:56}} />
                   </div>
 
                   <div className="form-group" style={{marginBottom:0}}>

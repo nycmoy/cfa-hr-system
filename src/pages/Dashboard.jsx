@@ -19,9 +19,10 @@ export default function Dashboard() {
 
   const active = employees.filter(e => e.status === 'active')
   const levelOf = e => e.leadershipStatus || e.disciplineLevel || 'good_standing'
-  const withDiscipline = employees.filter(e => levelOf(e) !== 'good_standing')
-  const finalWarningHours = employees.filter(e => levelOf(e) === 'final_warning')
-  const terminated = employees.filter(e => levelOf(e) === 'termination')
+  // Inactive employees should never surface in dashboard discipline call-outs
+  const withDiscipline = active.filter(e => levelOf(e) !== 'good_standing')
+  const finalWarningHours = active.filter(e => levelOf(e) === 'final_warning')
+  const terminated = active.filter(e => levelOf(e) === 'termination')
 
   const dueThisWeek = followups.filter(f => {
     if (!f.dueDate) return false

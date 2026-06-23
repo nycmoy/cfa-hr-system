@@ -46,6 +46,63 @@ export function parseCSVRow(row) {
   }
 }
 
+// ─── DOCUMENTATION AUTO-FILL: summarize an employee's flag history ───────────
+// Given the employee's full list of saved attendance flags (from Firestore),
+// produces the counts + date lists needed to pre-fill a disciplinary notice:
+// e.g. "3 Absences (03/22/26, 04/13/26, 05/06/26)  2 Lates (04/23/26, 06/06/26)"
+//
+// "Absence" = no-show flags. "Late" = every individual Tier 2 late, plus
+// every individual date inside a Tier 1 pattern flag (since each Tier 1
+// flag can bundle multiple actual late dates together).
+export function summarizeFlagHistory(flags) {
+  const absences = []
+  const lates = []
+
+  for (const f of flags) {
+    if (f.type === 'noshow') {
+      absences.push({ date: f.date, minutes: f.minutes })
+    } else if (f.type === 'tier2') {
+      lates.push({ date: f.date, minutes: f.minutes })
+    } else if (f.type === 'tier1' && Array.isArray(f.lates)) {
+      for (const l of f.lates) {
+        lates.push({ date: l.date, minutes: l.minutes })
+      }
+    }
+  }
+
+  // De-dupe by date (a date should only ever count once toward "lates" even
+  // if it somehow appears in more than one flag) and sort chronologically.
+  const dedupeSort = (arr) => {
+    const seen = new Map()
+    for (const item of arr) {
+      if (!seen.has(item.date)) seen.set(item.date, item)
+    }
+    return Array.from(seen.values()).sort((a, b) => new Date(a.date) - new Date(b.date))
+  }
+
+  const absenceList = dedupeSort(absences)
+  const lateList = dedupeSort(lates)
+
+  const fmtList = (arr) => arr.map(x => x.date).join(', ')
+
+  return {
+    absenceCount: absenceList.length,
+    absenceDates: absenceList.map(x => x.date),
+    absenceSummary: absenceList.length
+      ? `${absenceList.length} Absence${absenceList.length > 1 ? 's' : ''} (${fmtList(absenceList)})`
+      : '',
+    lateCount: lateList.length,
+    lateDates: lateList.map(x => x.date),
+    lateSummary: lateList.length
+      ? `${lateList.length} Late${lateList.length > 1 ? 's' : ''} (${fmtList(lateList)})`
+      : '',
+    combinedSummary: [
+      absenceList.length ? `${absenceList.length} Absence${absenceList.length > 1 ? 's' : ''} (${fmtList(absenceList)})` : null,
+      lateList.length ? `${lateList.length} Late${lateList.length > 1 ? 's' : ''} (${fmtList(lateList)})` : null,
+    ].filter(Boolean).join('   '),
+  }
+}
+
 export function analyzeEmployee(shifts) {
   const tier2Flags = []
   const tier1Lates = [] // flat list — grouped into rolling windows after the main loop
