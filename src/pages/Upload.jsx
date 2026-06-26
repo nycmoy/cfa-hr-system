@@ -1,13 +1,14 @@
 import { useState, useRef, useCallback } from 'react'
 import Papa from 'papaparse'
-import { parseCSVRow, analyzeEmployee } from '../lib/attendanceEngine'
+import { parseCSVRow, analyzeEmployee, parsePunchVariancePDF, pdfSegmentsToShifts } from '../lib/attendanceEngine'
+import { extractPdfText } from '../lib/pdfTextExtractor'
 import { upsertEmployee, saveAttendanceFlags, recordUpload } from '../lib/db'
 import { Link } from 'react-router-dom'
 
 const RULES = [
-  ['#E89A1A', '5–9 min late', '2+ in any 2-week window (anchored Jun 7) = 1 documentation'],
+  ['#E89A1A', '5–9 min late', '2+ in any 2-week payroll period (anchored Jun 7) = 1 documentation'],
   ['#C13333', '10+ min late', 'Each instance = its own documentation'],
-  ['#791F1F', '120+ min late', 'Treated as possible no-show — investigation required'],
+  ['#791F1F', 'No-show', 'PDF: detected directly from matching missed-shift variance. CSV: 120+ min late used as a proxy.'],
   ['#185FA5', '30+ min early departure', 'Flagged for manager review'],
   ['#888780', '5+ hrs over schedule', 'Flagged for possible missed punch'],
 ]
@@ -25,24 +26,48 @@ export default function Upload() {
     setError('')
 
     try {
-      // Parse CSV
-      setProgress({ step: 'Parsing CSV…', pct: 10 })
-      const text = await file.text()
-      const parsed = await new Promise((res, rej) =>
-        Papa.parse(text, { header: true, skipEmptyLines: true, complete: res, error: rej })
-      )
+      const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf'
+      let byEmployee = {}
+      let totalRows = 0
+      let allDates = []
 
-      const rows = parsed.data
-      if (!rows.length) throw new Error('No data rows found in file.')
-      if (!rows[0].FULL_NAME) throw new Error('File does not appear to be a punch variance export. Expected column: FULL_NAME.')
+      if (isPdf) {
+        setProgress({ step: 'Reading PDF…', pct: 8 })
+        const text = await extractPdfText(file)
 
-      setProgress({ step: 'Grouping shifts by employee…', pct: 25 })
-      const byEmployee = {}
-      for (const row of rows) {
-        const shift = parseCSVRow(row)
-        if (!shift.name) continue
-        if (!byEmployee[shift.name]) byEmployee[shift.name] = []
-        byEmployee[shift.name].push(shift)
+        setProgress({ step: 'Parsing punch report…', pct: 22 })
+        const parsedEmployees = parsePunchVariancePDF(text)
+        const empNamesFound = Object.keys(parsedEmployees)
+        if (empNamesFound.length === 0) {
+          throw new Error('No employees found. This PDF may not match the expected Actual vs. Scheduled Punch Variance Report format.')
+        }
+
+        for (const [name, segments] of Object.entries(parsedEmployees)) {
+          byEmployee[name] = pdfSegmentsToShifts(segments)
+          totalRows += segments.length
+          for (const seg of segments) if (seg.workday) allDates.push(seg.workday)
+        }
+      } else {
+        // CSV path (unchanged)
+        setProgress({ step: 'Parsing CSV…', pct: 10 })
+        const text = await file.text()
+        const parsed = await new Promise((res, rej) =>
+          Papa.parse(text, { header: true, skipEmptyLines: true, complete: res, error: rej })
+        )
+
+        const rows = parsed.data
+        if (!rows.length) throw new Error('No data rows found in file.')
+        if (!rows[0].FULL_NAME) throw new Error('File does not appear to be a punch variance export. Expected column: FULL_NAME.')
+
+        setProgress({ step: 'Grouping shifts by employee…', pct: 25 })
+        for (const row of rows) {
+          const shift = parseCSVRow(row)
+          if (!shift.name) continue
+          if (!byEmployee[shift.name]) byEmployee[shift.name] = []
+          byEmployee[shift.name].push(shift)
+          if (shift.workday) allDates.push(shift.workday)
+        }
+        totalRows = rows.length
       }
 
       const empNames = Object.keys(byEmployee)
@@ -91,17 +116,19 @@ export default function Upload() {
 
       setProgress({ step: 'Recording upload…', pct: 90 })
 
-      // Detect date range
-      const allDates = rows.map(r => new Date(r.WORKDAY)).filter(d => !isNaN(d))
-      const minDate = new Date(Math.min(...allDates)).toLocaleDateString('en-US')
-      const maxDate = new Date(Math.max(...allDates)).toLocaleDateString('en-US')
-      const dateRange = `${minDate} – ${maxDate}`
+      // Detect date range (works for both CSV and PDF — allDates was
+      // populated by whichever path ran above)
+      const validDates = allDates.filter(d => d instanceof Date && !isNaN(d))
+      const dateRange = validDates.length
+        ? `${new Date(Math.min(...validDates)).toLocaleDateString('en-US')} – ${new Date(Math.max(...validDates)).toLocaleDateString('en-US')}`
+        : 'Unknown range'
 
       await recordUpload({
         fileName: file.name,
+        fileType: isPdf ? 'pdf' : 'csv',
         dateRange,
         empCount: empNames.length,
-        shiftCount: rows.length,
+        shiftCount: totalRows,
         totalDocs,
         affectedCount,
       })
@@ -109,9 +136,10 @@ export default function Upload() {
       setProgress({ step: 'Done!', pct: 100 })
       setResult({
         fileName: file.name,
+        fileType: isPdf ? 'pdf' : 'csv',
         dateRange,
         empCount: empNames.length,
-        shiftCount: rows.length,
+        shiftCount: totalRows,
         totalDocs,
         totalNoshow,
         totalTier2,
@@ -167,12 +195,12 @@ export default function Upload() {
               onDrop={handleDrop}
             >
               <i className="ti ti-file-spreadsheet" style={{fontSize:36,color:'var(--text-ter)',display:'block',marginBottom:12}} aria-hidden="true" />
-              <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Drop your punch variance CSV here</div>
+              <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Drop your punch variance report here</div>
               <div style={{fontSize:12,color:'var(--text-sec)',marginBottom:16}}>
-                Export from your POS as CSV with columns: FULL_NAME, WORKDAY, SCHED_START, SCHED_END, WORK_START, WORK_END, START_VARIANCE, END_VARIANCE
+                Accepts either format: <strong>CSV export</strong> (columns: FULL_NAME, WORKDAY, SCHED_START, SCHED_END, WORK_START, WORK_END, START_VARIANCE, END_VARIANCE) or the <strong>PDF "Actual vs. Scheduled Punch Variance Report"</strong>. Use the PDF when you need true no-show detection — the CSV export doesn't preserve that signal.
               </div>
               <button className="btn btn-primary"><i className="ti ti-upload" aria-hidden="true" /> Choose file</button>
-              <input ref={fileRef} type="file" accept=".csv,.txt" style={{display:'none'}} onChange={e => processFile(e.target.files[0])} />
+              <input ref={fileRef} type="file" accept=".csv,.txt,.pdf" style={{display:'none'}} onChange={e => processFile(e.target.files[0])} />
             </div>
           </>
         )}
@@ -209,7 +237,10 @@ export default function Upload() {
                     <i className="ti ti-check" style={{fontSize:18}} aria-hidden="true" />
                   </div>
                   <div>
-                    <div style={{fontSize:14,fontWeight:500}}>Report processed — {result.dateRange}</div>
+                    <div style={{fontSize:14,fontWeight:500,display:'flex',alignItems:'center',gap:8}}>
+                      Report processed — {result.dateRange}
+                      <span className={`badge ${result.fileType==='pdf'?'badge-warn':'badge-info'}`}>{result.fileType?.toUpperCase()}</span>
+                    </div>
                     <div style={{fontSize:12,color:'var(--text-sec)'}}>{result.empCount} employees · {result.shiftCount.toLocaleString()} shifts</div>
                   </div>
                 </div>
