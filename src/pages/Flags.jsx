@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { getEmployees, getAttendanceFlags, updateFlagStatus, createDocument } from '../lib/db'
+import { getEmployees, getAttendanceFlags, updateFlagStatus, createDocument, findDuplicateFlags, deleteFlags } from '../lib/db'
 import { generateCoachingNote } from '../lib/pdfGenerator'
 
 const TYPE_LABELS = {
@@ -76,6 +76,13 @@ export default function Flags() {
   const [bulkResolution, setBulkResolution] = useState('')
   const [bulkNote, setBulkNote] = useState('')
   const [bulkSaving, setBulkSaving] = useState(false)
+
+  // One-time duplicate cleanup tool
+  const [cleanupModal, setCleanupModal] = useState(false)
+  const [cleanupScanning, setCleanupScanning] = useState(false)
+  const [duplicateGroups, setDuplicateGroups] = useState(null) // null = not yet scanned
+  const [cleanupDeleting, setCleanupDeleting] = useState(false)
+  const [cleanupResult, setCleanupResult] = useState(null)
 
   useEffect(() => { loadFlags() }, [])
 
@@ -209,6 +216,35 @@ export default function Flags() {
     }
   }
 
+  async function openCleanupModal() {
+    setCleanupModal(true)
+    setCleanupResult(null)
+    setDuplicateGroups(null)
+    setCleanupScanning(true)
+    try {
+      const groups = await findDuplicateFlags()
+      setDuplicateGroups(groups)
+    } finally {
+      setCleanupScanning(false)
+    }
+  }
+
+  async function handleDeleteDuplicates() {
+    if (!duplicateGroups || duplicateGroups.length === 0) return
+    setCleanupDeleting(true)
+    try {
+      const targets = duplicateGroups.flatMap(g =>
+        g.remove.map(f => ({ employeeId: g.employeeId, id: f.id }))
+      )
+      const { deleted } = await deleteFlags(targets)
+      setCleanupResult({ deleted })
+      setDuplicateGroups(null)
+      await loadFlags() // refresh the main flags list to reflect the cleanup
+    } finally {
+      setCleanupDeleting(false)
+    }
+  }
+
   function handleSort(key) {
     if (sortKey === key) {
       setSortDir(d => d === 'asc' ? 'desc' : 'asc')
@@ -290,6 +326,9 @@ export default function Flags() {
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
           {pending > 0 && <span className="badge badge-danger">{pending} pending</span>}
           {docNeeded > 0 && <span className="badge badge-warn">{docNeeded} need docs</span>}
+          <button className="btn btn-sm" onClick={openCleanupModal}>
+            <i className="ti ti-copy-off" aria-hidden="true" /> Find duplicates
+          </button>
         </div>
       </div>
       <div className="content">
@@ -615,6 +654,87 @@ export default function Flags() {
               >
                 {bulkSaving ? 'Saving…' : `Apply to ${selectedFlags.length} flag${selectedFlags.length!==1?'s':''}`}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate cleanup modal */}
+      {cleanupModal && (
+        <div className="modal-overlay" onClick={e => e.target===e.currentTarget && setCleanupModal(false)}>
+          <div className="modal" style={{width:640}}>
+            <div className="modal-header">
+              <div>
+                <div className="modal-header-title">Find & remove duplicate flags</div>
+                <div style={{fontSize:12,color:'var(--text-sec)'}}>Scans every employee for flags that are duplicates of each other</div>
+              </div>
+              <button className="btn btn-sm" onClick={() => setCleanupModal(false)}><i className="ti ti-x" /></button>
+            </div>
+            <div className="modal-body">
+              {cleanupScanning && (
+                <div style={{textAlign:'center',padding:32,color:'var(--text-sec)'}}>
+                  <i className="ti ti-loader" style={{fontSize:28,display:'block',marginBottom:10}} aria-hidden="true" />
+                  Scanning all employees for duplicate flags…
+                </div>
+              )}
+
+              {!cleanupScanning && cleanupResult && (
+                <div style={{textAlign:'center',padding:24}}>
+                  <i className="ti ti-circle-check" style={{fontSize:36,color:'var(--green)',display:'block',marginBottom:10}} aria-hidden="true" />
+                  <div style={{fontSize:15,fontWeight:500,marginBottom:4}}>Cleanup complete</div>
+                  <div style={{fontSize:13,color:'var(--text-sec)'}}>Removed {cleanupResult.deleted} duplicate flag{cleanupResult.deleted!==1?'s':''}.</div>
+                </div>
+              )}
+
+              {!cleanupScanning && !cleanupResult && duplicateGroups && (
+                duplicateGroups.length === 0 ? (
+                  <div className="empty-state">
+                    <i className="ti ti-circle-check" style={{color:'var(--green)'}} />
+                    <div>No duplicates found. Everything's clean.</div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="warn-box">
+                      <i className="ti ti-info-circle" aria-hidden="true" />
+                      <div>
+                        Found <strong>{duplicateGroups.length}</strong> duplicate group{duplicateGroups.length!==1?'s':''}, totaling{' '}
+                        <strong>{duplicateGroups.reduce((s,g)=>s+g.remove.length,0)}</strong> flag{duplicateGroups.reduce((s,g)=>s+g.remove.length,0)!==1?'s':''} to remove.
+                        For each group, the flag already resolved (or oldest if none are resolved) is kept — the rest are removed.
+                      </div>
+                    </div>
+                    <div style={{maxHeight:340,overflowY:'auto',border:'0.5px solid var(--border)',borderRadius:'var(--radius)'}}>
+                      <table className="data-table">
+                        <thead><tr><th>Employee</th><th>Type</th><th>Date / Window</th><th>Keeping</th><th>Removing</th></tr></thead>
+                        <tbody>
+                          {duplicateGroups.map((g, i) => (
+                            <tr key={i}>
+                              <td style={{fontWeight:500}}>{g.employeeName}</td>
+                              <td><span className="badge badge-gray">{TYPE_LABELS[g.keep.type]||g.keep.type}</span></td>
+                              <td className="mono" style={{fontSize:11}}>{g.keep.type==='tier1'?g.keep.windowLabel:g.keep.date}</td>
+                              <td><span className={`badge ${statusBadge(g.keep.status)}`}>{g.keep.status||'pending'}</span></td>
+                              <td><span className="badge badge-danger">{g.remove.length}</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn" onClick={() => setCleanupModal(false)}>
+                {cleanupResult ? 'Close' : 'Cancel'}
+              </button>
+              {!cleanupScanning && !cleanupResult && duplicateGroups && duplicateGroups.length > 0 && (
+                <button
+                  className="btn btn-danger"
+                  onClick={handleDeleteDuplicates}
+                  disabled={cleanupDeleting}
+                >
+                  <i className="ti ti-trash" /> {cleanupDeleting ? 'Removing…' : `Remove ${duplicateGroups.reduce((s,g)=>s+g.remove.length,0)} duplicate flags`}
+                </button>
+              )}
             </div>
           </div>
         </div>

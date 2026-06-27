@@ -61,7 +61,9 @@ export async function updateEmployee(id, data) {
 // Builds a stable identity key for a flag so we can detect duplicates
 // across uploads. Two flags are "the same" if they're the same type, on
 // the same date (or window, for Tier 1 patterns), for the same employee.
-function flagIdentityKey(flag) {
+// Exported so the one-time cleanup tool (Settings > Deduplicate flags)
+// uses this exact same definition of "duplicate."
+export function flagIdentityKey(flag) {
   if (flag.type === 'tier1') {
     return `tier1::${flag.windowLabel}`
   }
@@ -104,6 +106,67 @@ export async function getAttendanceFlags(employeeId) {
     query(collection(db, 'employees', employeeId, 'attendance'), orderBy('workday', 'desc'))
   )
   return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+}
+
+// ─── ONE-TIME CLEANUP: find & remove existing duplicate flags ────────────────
+// saveAttendanceFlags() only prevents NEW duplicates going forward. This
+// scans everything already in Firestore and groups flags that share the
+// same identity key (employee + type + date/window) — the same definition
+// used at upload time. Within each duplicate group, the OLDEST flag is kept
+// (first created = the original) and the rest are marked for removal.
+// Pending status is preferred over resolved when picking which to keep,
+// since a resolved flag represents work already done and shouldn't be the
+// one silently discarded.
+export async function findDuplicateFlags() {
+  const employees = await getEmployees()
+  const groups = [] // { employeeId, employeeName, key, flags: [...] } where flags.length > 1
+
+  for (const emp of employees) {
+    const flags = await getAttendanceFlags(emp.id)
+    const byKey = {}
+    for (const f of flags) {
+      const key = flagIdentityKey(f)
+      if (!byKey[key]) byKey[key] = []
+      byKey[key].push(f)
+    }
+    for (const [key, group] of Object.entries(byKey)) {
+      if (group.length > 1) {
+        // Prefer keeping a flag that's already been resolved (documented/
+        // excused/overridden) over a pending one — resolution work shouldn't
+        // be silently discarded. Among ties, keep the oldest (first created).
+        const sorted = [...group].sort((a, b) => {
+          const aResolved = a.status && a.status !== 'pending' ? 1 : 0
+          const bResolved = b.status && b.status !== 'pending' ? 1 : 0
+          if (aResolved !== bResolved) return bResolved - aResolved // resolved first
+          const aTime = a.createdAt?.seconds || 0
+          const bTime = b.createdAt?.seconds || 0
+          return aTime - bTime // oldest first
+        })
+        groups.push({
+          employeeId: emp.id,
+          employeeName: emp.name,
+          key,
+          keep: sorted[0],
+          remove: sorted.slice(1),
+        })
+      }
+    }
+  }
+
+  return groups
+}
+
+// Deletes a specific list of flag documents. Takes explicit
+// {employeeId, id} pairs rather than re-deriving duplicates itself, so the
+// caller (UI) controls exactly what gets removed after the person reviews
+// the findDuplicateFlags() preview.
+export async function deleteFlags(targets) {
+  const batch = writeBatch(db)
+  for (const t of targets) {
+    batch.delete(doc(db, 'employees', t.employeeId, 'attendance', t.id))
+  }
+  if (targets.length > 0) await batch.commit()
+  return { deleted: targets.length }
 }
 
 export async function updateFlagStatus(employeeId, flagId, status, note = '') {
