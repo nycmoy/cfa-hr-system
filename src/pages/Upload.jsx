@@ -75,6 +75,7 @@ export default function Upload() {
 
       let totalDocs = 0, totalNoshow = 0, totalTier2 = 0, totalTier1 = 0
       let totalEarly = 0, totalOverage = 0, affectedCount = 0
+      let totalWritten = 0, totalSkippedDupes = 0
       const summaries = []
 
       for (let i = 0; i < empNames.length; i++) {
@@ -90,9 +91,13 @@ export default function Upload() {
         // Upsert employee
         const empId = await upsertEmployee(name, { totalShifts: shifts.length })
 
-        // Save only flags that should be stored (excludes tier1-info which is below threshold)
+        // Save only flags that should be stored (excludes tier1-info which is
+        // below threshold). saveAttendanceFlags checks for duplicates against
+        // what's already on file and skips anything that matches.
         if (analysis.flagsToSave?.length) {
-          await saveAttendanceFlags(empId, analysis.flagsToSave)
+          const { written, skipped } = await saveAttendanceFlags(empId, analysis.flagsToSave)
+          totalWritten += written
+          totalSkippedDupes += skipped
         }
 
         totalDocs += analysis.docCount
@@ -147,6 +152,8 @@ export default function Upload() {
         totalEarly,
         totalOverage,
         affectedCount,
+        totalWritten,
+        totalSkippedDupes,
         top: summaries.sort((a, b) => b.docCount - a.docCount).slice(0, 8),
       })
       setStage('done')
@@ -244,13 +251,19 @@ export default function Upload() {
                     <div style={{fontSize:12,color:'var(--text-sec)'}}>{result.empCount} employees · {result.shiftCount.toLocaleString()} shifts</div>
                   </div>
                 </div>
-                <div className="metric-grid metric-grid-5" style={{marginBottom:16}}>
+                <div className="metric-grid metric-grid-5" style={{marginBottom:12}}>
                   <div className="metric"><div className="metric-label">Docs needed</div><div className="metric-value" style={{color:'var(--red)'}}>{result.totalDocs}</div></div>
                   <div className="metric"><div className="metric-label">No-shows</div><div className="metric-value" style={{color:'#791F1F'}}>{result.totalNoshow}</div></div>
                   <div className="metric"><div className="metric-label">Tier 2 lates</div><div className="metric-value" style={{color:'var(--red)'}}>{result.totalTier2}</div></div>
                   <div className="metric"><div className="metric-label">Tier 1 patterns</div><div className="metric-value" style={{color:'var(--amber-txt)'}}>{result.totalTier1}</div></div>
                   <div className="metric"><div className="metric-label">Early departures</div><div className="metric-value" style={{color:'var(--blue)'}}>{result.totalEarly}</div></div>
                 </div>
+                {result.totalSkippedDupes > 0 && (
+                  <div className="info-box" style={{marginBottom:16}}>
+                    <i className="ti ti-shield-check" aria-hidden="true" />
+                    <div><strong>{result.totalSkippedDupes}</strong> flag{result.totalSkippedDupes!==1?'s':''} already existed from a prior upload and {result.totalSkippedDupes!==1?'were':'was'} skipped — no duplicates created. {result.totalWritten} new flag{result.totalWritten!==1?'s':''} added.</div>
+                  </div>
+                )}
                 <div style={{display:'flex',gap:8}}>
                   <Link to="/flags" className="btn btn-primary"><i className="ti ti-alert-circle" aria-hidden="true" /> Review flags</Link>
                   <button className="btn" onClick={() => setStage('idle')}><i className="ti ti-upload" aria-hidden="true" /> Upload another</button>

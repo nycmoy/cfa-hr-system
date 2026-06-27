@@ -58,17 +58,45 @@ export async function updateEmployee(id, data) {
 }
 
 // ─── ATTENDANCE FLAGS ─────────────────────────────────────────────────────────
+// Builds a stable identity key for a flag so we can detect duplicates
+// across uploads. Two flags are "the same" if they're the same type, on
+// the same date (or window, for Tier 1 patterns), for the same employee.
+function flagIdentityKey(flag) {
+  if (flag.type === 'tier1') {
+    return `tier1::${flag.windowLabel}`
+  }
+  return `${flag.type}::${flag.date}`
+}
+
 export async function saveAttendanceFlags(employeeId, flags) {
+  // Pull existing flags once so we can check every incoming flag against
+  // what's already on file — prevents re-uploading the same report (or an
+  // overlapping date range) from creating duplicate flag records.
+  const existing = await getAttendanceFlags(employeeId)
+  const existingKeys = new Set(existing.map(flagIdentityKey))
+
   const batch = writeBatch(db)
+  let skipped = 0
+  let written = 0
+
   for (const flag of flags) {
+    const key = flagIdentityKey(flag)
+    if (existingKeys.has(key)) {
+      skipped++
+      continue
+    }
+    existingKeys.add(key) // guard against duplicates within the same upload batch too
     const ref = doc(collection(db, 'employees', employeeId, 'attendance'))
     batch.set(ref, {
       ...flag,
       createdAt: serverTimestamp(),
       status: flag.status || 'pending',
     })
+    written++
   }
-  await batch.commit()
+
+  if (written > 0) await batch.commit()
+  return { written, skipped }
 }
 
 export async function getAttendanceFlags(employeeId) {

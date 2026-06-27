@@ -35,6 +35,7 @@ export default function Documentation() {
   const [scheduledTime, setScheduledTime] = useState('')
   const [actualTime, setActualTime] = useState('')
   const [minutesLate, setMinutesLate] = useState('')
+  const [calledIn, setCalledIn] = useState(null) // null = not set, true = called in appropriately, false = did not
 
   // Disciplinary notice form fields — match the exact paper form
   const [operatorName, setOperatorName] = useState('Nyc Moy')
@@ -153,6 +154,26 @@ export default function Documentation() {
     setAllDocs(all)
   }
 
+  const CALLED_IN_YES = 'Called in appropriately.'
+  const CALLED_IN_NO = 'Did not call in appropriately.'
+
+  // Adds, swaps, or removes the called-in phrase in the notes field without
+  // duplicating it if clicked more than once, and without disturbing any
+  // other text the manager has already written.
+  function handleCalledInToggle(value) {
+    setCalledIn(value)
+    setNotes(prevNotes => {
+      let cleaned = prevNotes
+        .replace(CALLED_IN_YES, '')
+        .replace(CALLED_IN_NO, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim()
+      if (value === true) cleaned = cleaned ? `${CALLED_IN_YES} ${cleaned}` : CALLED_IN_YES
+      if (value === false) cleaned = cleaned ? `${CALLED_IN_NO} ${cleaned}` : CALLED_IN_NO
+      return cleaned
+    })
+  }
+
   async function handleSave() {
     if (!empId || !docType) return
     setSaving(true)
@@ -252,6 +273,7 @@ export default function Documentation() {
       setShowForm(false)
       setNotes('')
       setDeviationReason('')
+      setCalledIn(null)
     } finally {
       setSaving(false)
     }
@@ -470,6 +492,34 @@ export default function Documentation() {
                   </div>
                 </div>
               )}
+
+              <div className="form-group">
+                <label className="form-label">Did the team member call in appropriately?</label>
+                <div style={{display:'flex',gap:8}}>
+                  <button
+                    type="button"
+                    onClick={() => handleCalledInToggle(true)}
+                    className="btn btn-sm"
+                    style={calledIn === true ? {background:'var(--green-lt)',color:'var(--green-txt)',borderColor:'var(--green)'} : {}}
+                  >
+                    <i className="ti ti-phone-check" /> Called in appropriately
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCalledInToggle(false)}
+                    className="btn btn-sm"
+                    style={calledIn === false ? {background:'var(--red-lt)',color:'var(--red-txt)',borderColor:'var(--red)'} : {}}
+                  >
+                    <i className="ti ti-phone-x" /> Did not call in appropriately
+                  </button>
+                  {calledIn !== null && (
+                    <button type="button" className="btn btn-sm" onClick={() => handleCalledInToggle(null)}>
+                      <i className="ti ti-x" /> Clear
+                    </button>
+                  )}
+                </div>
+                <div style={{fontSize:11,color:'var(--text-ter)',marginTop:4}}>Adds a note to the documentation below — only relevant if this incident involved an absence or call-out.</div>
+              </div>
 
               <div className="form-group">
                 <label className="form-label">Notes</label>

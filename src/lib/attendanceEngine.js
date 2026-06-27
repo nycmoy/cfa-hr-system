@@ -238,6 +238,12 @@ export function analyzeEmployee(shifts) {
   const noshowFlags = []
   const absenceDates = [] // for excessive-absence (3+ in rolling 3mo) evaluation
 
+  // Collect raw no-show segments first; consolidate to one-per-day after the
+  // main loop (an employee can have multiple scheduled segments in a single
+  // day, e.g. split shift, and each missed segment would otherwise count as
+  // a separate absence — they should count as ONE absence for that day).
+  const rawNoShowSegments = []
+
   for (const s of shifts) {
     const lateMins = s.startVar < 0 ? Math.abs(s.startVar) : 0
     const earlyMins = s.endVar < 0 ? Math.abs(s.endVar) : 0
@@ -248,36 +254,24 @@ export function analyzeEmployee(shifts) {
     // directly rather than re-deriving it from "minutes late," since for a
     // genuine no-show there often isn't a real "late arrival" at all.
     if (s.isNoShowFromPDF) {
-      noshowFlags.push({
-        type: 'noshow',
+      rawNoShowSegments.push({
         date: s.workdayStr,
         workday: s.workday,
         minutes: Math.abs(s.startVar),
-        detail: `No-show — scheduled shift entirely missed (detected from punch report)`,
-        schedStart: s.schedStart,
-        workStart: s.workStart,
-        severity: 'critical',
-        status: 'pending',
+        source: 'pdf',
       })
-      absenceDates.push({ date: s.workdayStr, workday: s.workday })
       continue // don't also evaluate this shift for late/early/overage
     }
 
     if (lateMins >= 120) {
-      noshowFlags.push({
-        type: 'noshow',
+      rawNoShowSegments.push({
         date: s.workdayStr,
         workday: s.workday,
         minutes: lateMins,
-        detail: `Arrived ${lateMins} min late — possible no-show or missed punch`,
         schedStart: s.schedStart,
         workStart: s.workStart,
-        severity: 'critical',
-        status: 'pending',
+        source: 'csv-late-proxy',
       })
-      // Treat as an absence for the excessive-absence evaluation, regardless
-      // of whether it's later excused — the flag exists to prompt review.
-      absenceDates.push({ date: s.workdayStr, workday: s.workday })
     } else if (lateMins >= TIER2_MIN) {
       tier2Flags.push({
         type: 'tier2',
@@ -322,6 +316,42 @@ export function analyzeEmployee(shifts) {
         status: 'pending',
       })
     }
+  }
+
+  // ── CONSOLIDATE SAME-DAY NO-SHOWS INTO ONE ABSENCE PER DAY ────────────────
+  // An employee with a split shift (e.g. lunch + dinner segments) who misses
+  // both segments on the same calendar day should count as ONE absence that
+  // day, not two. Group raw no-show segments by date, keep the segment with
+  // the largest minutes-missed as representative, and note the segment count.
+  const noShowByDate = {}
+  for (const seg of rawNoShowSegments) {
+    if (!noShowByDate[seg.date]) noShowByDate[seg.date] = []
+    noShowByDate[seg.date].push(seg)
+  }
+
+  for (const [dateStr, segs] of Object.entries(noShowByDate)) {
+    const representative = segs.reduce((max, s) => s.minutes > max.minutes ? s : max, segs[0])
+    const multiSegment = segs.length > 1
+    noshowFlags.push({
+      type: 'noshow',
+      date: dateStr,
+      workday: representative.workday,
+      minutes: representative.minutes,
+      detail: multiSegment
+        ? `No-show — ${segs.length} scheduled segments missed this day (counted as 1 absence)`
+        : representative.source === 'pdf'
+          ? 'No-show — scheduled shift entirely missed (detected from punch report)'
+          : `Arrived ${representative.minutes} min late — possible no-show or missed punch`,
+      schedStart: representative.schedStart,
+      workStart: representative.workStart,
+      severity: 'critical',
+      status: 'pending',
+      segmentCount: segs.length,
+    })
+    // One absence per day toward the excessive-absence evaluation, regardless
+    // of how many scheduled segments were missed that day or whether it's
+    // later excused — the flag exists to prompt review.
+    absenceDates.push({ date: dateStr, workday: representative.workday })
   }
 
   // ── TIER 1: fixed 2-week PAYROLL PERIODS, anchored to Jun 7, 2026 ─────────

@@ -69,13 +69,24 @@ export default function Flags() {
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
 
+  // Bulk selection — checkbox per row, batch excuse/override across all
+  // selected flags at once.
+  const [selectedIds, setSelectedIds] = useState(new Set()) // keys: `${employeeId}::${id}`
+  const [bulkModal, setBulkModal] = useState(false)
+  const [bulkResolution, setBulkResolution] = useState('')
+  const [bulkNote, setBulkNote] = useState('')
+  const [bulkSaving, setBulkSaving] = useState(false)
+
   useEffect(() => { loadFlags() }, [])
 
   async function loadFlags() {
     setLoading(true)
     const emps = await getEmployees()
+    // Inactive employees should never surface flags for review — their
+    // attendance history is no longer actionable once they're inactive.
+    const activeEmps = emps.filter(e => (e.status || 'active') === 'active')
     const all = []
-    for (const emp of emps) {
+    for (const emp of activeEmps) {
       const flags = await getAttendanceFlags(emp.id)
       flags.forEach(f => all.push({ ...f, employeeId: emp.id, employeeName: emp.name }))
     }
@@ -136,6 +147,65 @@ export default function Flags() {
       setSelected(null)
     } finally {
       setSaving(false)
+    }
+  }
+
+  function rowKey(f) { return `${f.employeeId}::${f.id}` }
+
+  function toggleRowSelected(f) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      const key = rowKey(f)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  function toggleSelectAllVisible() {
+    setSelectedIds(prev => {
+      const allSelected = filtered.every(f => prev.has(rowKey(f)))
+      if (allSelected) return new Set()
+      const next = new Set(prev)
+      filtered.forEach(f => next.add(rowKey(f)))
+      return next
+    })
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set())
+  }
+
+  function openBulkModal() {
+    setBulkResolution('')
+    setBulkNote('')
+    setBulkModal(true)
+  }
+
+  const selectedFlags = useMemo(
+    () => rows.filter(f => selectedIds.has(rowKey(f))),
+    [rows, selectedIds]
+  )
+
+  // Bulk resolve only supports excuse/override — "create documentation" and
+  // "documentation only" need a per-employee form and don't make sense to
+  // batch blindly, so those stay single-flag actions via the Review modal.
+  async function handleBulkResolve() {
+    if (!bulkResolution || selectedFlags.length === 0) return
+    if (bulkResolution === 'override' && !bulkNote.trim()) return
+
+    setBulkSaving(true)
+    try {
+      const newStatus = bulkResolution === 'override' ? 'overridden' : 'excused'
+      for (const f of selectedFlags) {
+        await updateFlagStatus(f.employeeId, f.id, newStatus, bulkNote)
+      }
+      const resolvedKeys = new Set(selectedFlags.map(rowKey))
+      setRows(prev => prev.map(r => resolvedKeys.has(rowKey(r)) ? { ...r, status: newStatus } : r))
+      clearSelection()
+      setBulkModal(false)
+    } finally {
+      setBulkSaving(false)
     }
   }
 
@@ -264,6 +334,23 @@ export default function Flags() {
           </div>
         </div>
 
+        {selectedIds.size > 0 && (
+          <div style={{
+            background: 'var(--amber-lt)', border: '0.5px solid #FAC775', borderRadius: 'var(--radius)',
+            padding: '10px 16px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12,
+          }}>
+            <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--amber-txt)' }}>
+              {selectedIds.size} flag{selectedIds.size !== 1 ? 's' : ''} selected
+            </span>
+            <div style={{ display: 'flex', gap: 8, marginLeft: 'auto' }}>
+              <button className="btn btn-sm" onClick={clearSelection}>Clear</button>
+              <button className="btn btn-sm btn-primary" onClick={openBulkModal}>
+                <i className="ti ti-checklist" /> Resolve selected
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="card" style={{padding:0}}>
           {filtered.length === 0 ? (
             <div className="empty-state">
@@ -274,6 +361,15 @@ export default function Flags() {
             <table className="data-table">
               <thead>
                 <tr>
+                  <th style={{ width: 36 }}>
+                    <input
+                      type="checkbox"
+                      checked={filtered.length > 0 && filtered.every(f => selectedIds.has(rowKey(f)))}
+                      onChange={toggleSelectAllVisible}
+                      style={{ width: 'auto' }}
+                      title="Select all visible"
+                    />
+                  </th>
                   <SortHeader label="Employee" k="employee" />
                   <SortHeader label="Type" k="type" />
                   <SortHeader label="Date / Window" k="date" />
@@ -286,8 +382,20 @@ export default function Flags() {
                 {filtered.map(f => {
                   const s = SEV_STYLE[f.severity] || SEV_STYLE.info
                   const displayDate = f.type === 'tier1' ? f.windowLabel : f.date
+                  const isPending = !f.status || f.status === 'pending'
+                  const checked = selectedIds.has(rowKey(f))
                   return (
-                    <tr key={`${f.employeeId}-${f.id}`}>
+                    <tr key={`${f.employeeId}-${f.id}`} style={checked ? { background: 'var(--amber-lt)' } : undefined}>
+                      <td>
+                        {isPending && (
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleRowSelected(f)}
+                            style={{ width: 'auto' }}
+                          />
+                        )}
+                      </td>
                       <td>
                         <Link to={`/employees/${f.employeeId}`} style={{fontWeight:500,color:'var(--text)',textDecoration:'none'}}>
                           {f.employeeName}
@@ -306,7 +414,7 @@ export default function Flags() {
                         </span>
                       </td>
                       <td>
-                        {(!f.status || f.status === 'pending') && (
+                        {isPending && (
                           <button className="btn btn-sm" onClick={() => openReview(f)}>
                             Review
                           </button>
@@ -419,6 +527,93 @@ export default function Flags() {
                 disabled={saving || !resolution || (resolution === 'override' && !note.trim())}
               >
                 {saving ? 'Saving…' : resolution === 'create_documentation' ? 'Open documentation form' : 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk resolve modal */}
+      {bulkModal && (
+        <div className="modal-overlay" onClick={e => e.target===e.currentTarget && setBulkModal(false)}>
+          <div className="modal" style={{width:560}}>
+            <div className="modal-header">
+              <div>
+                <div className="modal-header-title">Resolve {selectedFlags.length} flag{selectedFlags.length!==1?'s':''}</div>
+                <div style={{fontSize:12,color:'var(--text-sec)'}}>Applies the same resolution to every selected flag</div>
+              </div>
+              <button className="btn btn-sm" onClick={() => setBulkModal(false)}><i className="ti ti-x" /></button>
+            </div>
+            <div className="modal-body">
+              <div style={{maxHeight:160,overflowY:'auto',border:'0.5px solid var(--border)',borderRadius:'var(--radius)',marginBottom:16}}>
+                <table className="data-table">
+                  <thead><tr><th>Employee</th><th>Type</th><th>Date</th></tr></thead>
+                  <tbody>
+                    {selectedFlags.map(f => (
+                      <tr key={rowKey(f)}>
+                        <td style={{fontWeight:500}}>{f.employeeName}</td>
+                        <td><span className="badge badge-gray">{TYPE_LABELS[f.type]||f.type}</span></td>
+                        <td className="mono" style={{fontSize:11}}>{f.type==='tier1'?f.windowLabel:f.date}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="warn-box">
+                <i className="ti ti-info-circle" aria-hidden="true" />
+                <div>Bulk actions support <strong>Excuse</strong> and <strong>Override</strong> only. For "Create documentation" or "Documentation only," resolve flags individually since each generates a distinct document.</div>
+              </div>
+
+              <div style={{fontSize:12,fontWeight:500,color:'var(--text-sec)',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:10}}>
+                Resolution for all selected
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
+                {['excuse','override'].map(opt => {
+                  const m = OPTION_META[opt]
+                  return (
+                    <div key={opt}
+                      onClick={() => setBulkResolution(opt)}
+                      style={{
+                        border: `0.5px solid ${bulkResolution===opt ? m.color : 'var(--border)'}`,
+                        borderLeft: `3px solid ${bulkResolution===opt ? m.color : 'var(--border)'}`,
+                        borderRadius: 'var(--radius)',
+                        padding: '10px 14px',
+                        cursor: 'pointer',
+                        background: bulkResolution===opt ? m.bg : 'var(--surface)',
+                      }}
+                    >
+                      <div style={{fontSize:13,fontWeight:500,color:bulkResolution===opt?m.color:'var(--text)'}}>{m.label}</div>
+                      <div style={{fontSize:12,color:'var(--text-sec)',marginTop:2}}>{m.desc}</div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">
+                  {bulkResolution === 'override' ? 'Override reason (required, applies to all)' : 'Notes (optional, applies to all)'}
+                </label>
+                <textarea
+                  value={bulkNote}
+                  onChange={e => setBulkNote(e.target.value)}
+                  placeholder={bulkResolution === 'override' ? 'Explain why these flags are being removed…' : 'Any shared context…'}
+                />
+              </div>
+              {bulkResolution === 'override' && !bulkNote.trim() && (
+                <div style={{fontSize:12,color:'var(--red-txt)',marginTop:-8,marginBottom:8}}>
+                  A comment is required to override flags.
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn" onClick={() => setBulkModal(false)}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                onClick={handleBulkResolve}
+                disabled={bulkSaving || !bulkResolution || (bulkResolution === 'override' && !bulkNote.trim())}
+              >
+                {bulkSaving ? 'Saving…' : `Apply to ${selectedFlags.length} flag${selectedFlags.length!==1?'s':''}`}
               </button>
             </div>
           </div>
