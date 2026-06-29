@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import Papa from 'papaparse'
-import { parseCSVRow, analyzeEmployee, parsePunchVariancePDF, pdfSegmentsToShifts } from '../lib/attendanceEngine'
-import { extractPdfText } from '../lib/pdfTextExtractor'
+import { parseCSVRow, analyzeEmployee, parsePunchVariancePDFFromWords, pdfSegmentsToShifts } from '../lib/attendanceEngine'
+import { extractPdfWords } from '../lib/pdfTextExtractor'
 import { upsertEmployee, saveAttendanceFlags, recordUpload } from '../lib/db'
 import { Link } from 'react-router-dom'
 
@@ -33,10 +33,15 @@ export default function Upload() {
 
       if (isPdf) {
         setProgress({ step: 'Reading PDF…', pct: 8 })
-        const text = await extractPdfText(file)
+        // Extract words WITH their x/y position preserved — this report's
+        // columns can't be reliably told apart by token order in flattened
+        // text (a clock-out-only line and a clock-in-only line can look
+        // identical in plain text). Position on the page is the only
+        // reliable signal for which column a variance value belongs to.
+        const pages = await extractPdfWords(file)
 
         setProgress({ step: 'Parsing punch report…', pct: 22 })
-        const parsedEmployees = parsePunchVariancePDF(text)
+        const parsedEmployees = parsePunchVariancePDFFromWords(pages)
         const empNamesFound = Object.keys(parsedEmployees)
         if (empNamesFound.length === 0) {
           throw new Error('No employees found. This PDF may not match the expected Actual vs. Scheduled Punch Variance Report format.')

@@ -110,106 +110,132 @@ export function summarizeFlagHistory(flags) {
 // the clock-in AND clock-out variance both equal to the same large negative
 // value — the whole shift duration was missed on both ends.
 //
-// Detection rule (validated against real report data): ciVar === coVar,
-// both negative, and at least 60 minutes — NOT a token-count heuristic,
-// since a normal two-time-token line and a no-show line can both show two
-// time tokens (the no-show's "times" are actually both schedule times).
-
-const SKIP_PREFIXES = [
-  'Actual Vs.', 'Jacksonville', 'Overage Shortage', 'Clock-In Clock-Out',
-  'Employee Name Date', 'Variance Variance', 'Overage Total', 'Shortage Total',
-  'Total Time:',
-]
-const PAGE_FOOTER_RE = /^\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}\s+[AP]M\s+Page/
-const DATE_RANGE_RE = /^\d{2}\/\d{2}\/\d{4}\s*-\s*\d{2}\/\d{2}\/\d{4}$/
-const DATE_LINE_RE = /^(\d{2}\/\d{2}\/\d{4})\s+(.*)$/
-const TIME_RE = /\d{1,2}:\d{2}\s*[AP]M/g
-const EMP_NAME_RE = /^[A-Z][a-zA-Z'-]+,\s*[A-Z]/
-
-function isSkipLine(line) {
-  const trimmed = line.trim()
-  if (SKIP_PREFIXES.some(p => trimmed.startsWith(p))) return true
-  if (PAGE_FOOTER_RE.test(trimmed)) return true
-  if (DATE_RANGE_RE.test(trimmed)) return true
-  return false
+// IMPORTANT: this report's columns are NOT reliably separable by token
+// order in flattened text. A continuation line representing only a
+// clock-out event can show its single variance value in either the first
+// OR second token slot depending on spacing/whitespace collapsing — token
+// order alone misreads a clock-out variance as a clock-in variance (and
+// vice versa). The only reliable signal is each word's horizontal (x)
+// position on the page, which maps to a fixed column regardless of how
+// many other columns are blank ("--") on that line. These ranges were
+// measured directly from the report's column headers and validated against
+// real multi-segment-shift and no-show rows.
+const COLUMNS = {
+  date: [40, 190],
+  actualTime: [190, 245],
+  schedTime: [245, 312],
+  ciVar: [312, 352],
+  coVar: [352, 415],
+  overage: [415, 470],
+  shortage: [470, 600],
 }
 
+function classifyColumn(xMid) {
+  for (const [name, [lo, hi]] of Object.entries(COLUMNS)) {
+    if (xMid >= lo && xMid < hi) return name
+  }
+  return 'unknown'
+}
+
+const HEADER_WORDS = new Set([
+  'Actual', 'Vs.', 'Scheduled', 'Punch', 'Variance', 'Report', 'Jacksonville',
+  '[TX]', 'FSU', 'Overage', 'Shortage', 'Clock-In', 'Clock-Out', 'Employee',
+  'Name', 'Date', 'Time', 'Clock-In/Out',
+])
+const EMP_NAME_RE = /^[A-Z][a-zA-Z'-]+,\s*[A-Z]/
+const DATE_TOKEN_RE = /^\d{2}\/\d{2}\/\d{4}$/
+const PAGE_FOOTER_RE = /^\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}\s+[AP]M.*Page/
+const DATE_RANGE_RE = /^\d{2}\/\d{2}\/\d{4}\s*-\s*\d{2}\/\d{2}\/\d{4}$/
+
 function toSignedMinutes(tok) {
+  if (!tok || tok === '--') return null
   const neg = tok.startsWith('(')
-  const clean = tok.replace(/[()]/g, '')
+  const clean = tok.replace(/[()$,]/g, '')
+  if (!/^\d+:\d+$/.test(clean)) return null
   const [h, m] = clean.split(':').map(Number)
   const val = h * 60 + m
   return neg ? -val : val
 }
 
-/**
- * Parses raw extracted text from the Actual vs. Scheduled Punch Variance
- * PDF report into { employeeName: [ { date, ciVar, coVar, isNoShow, raw } ] }.
- * `rawText` should be the full text extracted from all pages, concatenated.
- */
-export function parsePunchVariancePDF(rawText) {
-  const lines = rawText.split('\n').map(l => l.trim()).filter(Boolean)
-  const employees = {} // name -> [ segments ]
-  let currentEmp = null
-  let i = 0
-
-  while (i < lines.length) {
-    const line = lines[i]
-
-    if (isSkipLine(line)) { i += 1; continue }
-
-    const isEmpName = EMP_NAME_RE.test(line) && !line.startsWith('Working Time') && !DATE_LINE_RE.test(line)
-    if (isEmpName) {
-      currentEmp = line
-      if (!employees[currentEmp]) employees[currentEmp] = []
-      i += 1
-      continue
-    }
-
-    const l = line.replace(/^Working Time\s+/, '')
-    const m = l.match(DATE_LINE_RE)
-    if (m && currentEmp) {
-      const dateStr = m[1]
-      const rest = m[2]
-
-      const nextLine = i + 1 < lines.length ? lines[i + 1] : ''
-      const nextIsContinuation = TIME_RE.test(nextLine) && !DATE_LINE_RE.test(nextLine) &&
-        !isSkipLine(nextLine) && !EMP_NAME_RE.test(nextLine)
-      TIME_RE.lastIndex = 0 // reset after .test() use
-
-      const combined = rest + (nextIsContinuation ? ' ' + nextLine : '')
-      const allTimes = combined.match(TIME_RE) || []
-      TIME_RE.lastIndex = 0
-
-      let stripped = combined
-      for (const t of allTimes) stripped = stripped.replace(t, '')
-      const varTokens = stripped.match(/\(?\d+:\d+\)?/g) || []
-
-      const ciVar = varTokens.length > 0 ? toSignedMinutes(varTokens[0]) : null
-      const coVar = varTokens.length > 1 ? toSignedMinutes(varTokens[1]) : null
-
-      const isNoShow = ciVar !== null && coVar !== null && ciVar === coVar && ciVar <= -60
-
-      employees[currentEmp].push({
-        date: dateStr,
-        workday: parseDateMMDDYYYY(dateStr),
-        ciVar, coVar, isNoShow,
-        raw: combined,
-      })
-
-      i += nextIsContinuation ? 2 : 1
-      continue
-    }
-
-    i += 1
-  }
-
-  return employees
-}
-
 function parseDateMMDDYYYY(str) {
   const [mm, dd, yyyy] = str.split('/').map(Number)
   return new Date(yyyy, mm - 1, dd)
+}
+
+/**
+ * Parses positioned word data (from extractPdfWords) into
+ * { employeeName: [ { date, ciVar, coVar, isNoShow } ] } by classifying
+ * every word into its report column by x-coordinate, then grouping words
+ * into physical rows by y-coordinate. This is the reliable replacement for
+ * token-order-based text parsing — see the column-position note above.
+ *
+ * `pages` is an array of pages, each an array of { text, x0, x1, top }.
+ */
+export function parsePunchVariancePDFFromWords(pages) {
+  const employees = {}
+  let currentEmp = null
+
+  for (const pageWords of pages) {
+    // Group into physical rows by top-coordinate, tolerant of small jitter
+    const rowBuckets = new Map()
+    for (const w of pageWords) {
+      const key = Math.round(w.top / 3) * 3
+      if (!rowBuckets.has(key)) rowBuckets.set(key, [])
+      rowBuckets.get(key).push(w)
+    }
+    const sortedTops = Array.from(rowBuckets.keys()).sort((a, b) => a - b)
+
+    for (const top of sortedTops) {
+      const rowWords = rowBuckets.get(top).sort((a, b) => a.x0 - b.x0)
+      const texts = rowWords.map(w => w.text)
+      const fullLine = texts.join(' ')
+
+      // Skip rows that are entirely repeated column headers (these can
+      // appear mid-document at every page break, not just at position 0)
+      if (texts.every(t => HEADER_WORDS.has(t) || t === '|' || t === '-')) continue
+      if (PAGE_FOOTER_RE.test(fullLine)) continue
+      if (DATE_RANGE_RE.test(fullLine.trim())) continue
+
+      if (EMP_NAME_RE.test(fullLine) && !fullLine.includes('Working Time')) {
+        currentEmp = fullLine.trim()
+        if (!employees[currentEmp]) employees[currentEmp] = []
+        continue
+      }
+      if (fullLine.includes('Overage Total') || fullLine.includes('Shortage Total') || fullLine.includes('Total Time')) continue
+
+      const dataWords = rowWords.filter(w => w.text !== 'Working' && w.text !== 'Time')
+      if (dataWords.length === 0) continue
+
+      const byCol = {}
+      for (const w of dataWords) {
+        const col = classifyColumn((w.x0 + w.x1) / 2)
+        if (!byCol[col]) byCol[col] = []
+        byCol[col].push(w.text)
+      }
+
+      const dateText = (byCol.date || []).join(' ').trim()
+      if (DATE_TOKEN_RE.test(dateText) && currentEmp) {
+        const ciToken = (byCol.ciVar || []).join(' ').trim() || null
+        const coToken = (byCol.coVar || []).join(' ').trim() || null
+        const ciVar = toSignedMinutes(ciToken)
+        const coVar = toSignedMinutes(coToken)
+        const isNoShow = ciVar !== null && coVar !== null && ciVar === coVar && ciVar <= -60
+
+        employees[currentEmp].push({
+          date: dateText,
+          workday: parseDateMMDDYYYY(dateText),
+          ciVar, coVar, isNoShow,
+        })
+      }
+      // Rows with a recognizable date in another column position, or pure
+      // continuation rows showing only additional time tokens with no new
+      // variance data, contribute nothing further — each (date, ciVar,
+      // coVar) triple is captured fully on its own row in this column
+      // layout, unlike the old multi-line "combine with next line" model.
+    }
+  }
+
+  return employees
 }
 
 // Converts the PDF parser's output into the same shape analyzeEmployee()

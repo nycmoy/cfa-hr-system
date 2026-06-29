@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard'
 import Employees from './pages/Employees'
 import EmployeeDetail from './pages/EmployeeDetail'
 import Upload from './pages/Upload'
+import VerifyUpload from './pages/VerifyUpload'
 import Flags from './pages/Flags'
 import Documentation from './pages/Documentation'
 import Training from './pages/Training'
@@ -35,6 +36,7 @@ function App() {
             <Route path="employees" element={<Employees />} />
             <Route path="employees/:id" element={<EmployeeDetail />} />
             <Route path="upload" element={<Upload />} />
+            <Route path="verify-upload" element={<VerifyUpload />} />
             <Route path="flags" element={<Flags />} />
             <Route path="documentation" element={<Documentation />} />
             <Route path="training" element={<Training />} />

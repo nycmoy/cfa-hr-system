@@ -24,6 +24,9 @@ export default function Layout() {
         <NavLink to="/upload" className={({isActive})=>`nav-item${isActive?' active':''}`}>
           <i className="ti ti-upload" aria-hidden="true" /> Upload report
         </NavLink>
+        <NavLink to="/verify-upload" className={({isActive})=>`nav-item${isActive?' active':''}`}>
+          <i className="ti ti-file-search" aria-hidden="true" /> Verify upload
+        </NavLink>
         <NavLink to="/flags" className={({isActive})=>`nav-item${isActive?' active':''}`}>
           <i className="ti ti-alert-circle" aria-hidden="true" /> Flags
         </NavLink>

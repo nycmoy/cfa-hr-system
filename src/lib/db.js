@@ -169,6 +169,62 @@ export async function deleteFlags(targets) {
   return { deleted: targets.length }
 }
 
+// ─── RE-VERIFY: compare re-parsed PDF flags against what's stored ────────────
+// Used by the "Verify upload" tool after a parser fix — re-runs the source
+// PDF through the (now corrected) parser and compares the result against
+// what's actually sitting in Firestore for each employee, so a manager can
+// see exactly which existing flags are correct, wrong, or fabricated before
+// deleting anything. Never deletes on its own — returns a report only.
+//
+// `expectedByEmployee` is { employeeName: [ flag, ... ] } as produced by
+// analyzeEmployee().flagsToSave for each employee from the re-parsed file.
+export async function verifyFlagsAgainstSource(expectedByEmployee, employeeNameToId) {
+  const report = [] // one entry per employee that has either expected or stored flags in scope
+
+  for (const [name, expectedFlags] of Object.entries(expectedByEmployee)) {
+    const empId = employeeNameToId[name]
+    if (!empId) {
+      report.push({ employeeName: name, employeeId: null, notFound: true, matches: [], mismatches: [], missing: expectedFlags, fabricated: [] })
+      continue
+    }
+
+    const storedFlags = await getAttendanceFlags(empId)
+    // Only compare against stored flags whose date falls within the dates
+    // covered by this re-uploaded file, so we don't flag unrelated weeks
+    // as "fabricated" just because they aren't in this particular PDF.
+    const expectedDates = new Set(expectedFlags.map(f => f.date))
+    const storedInScope = storedFlags.filter(f => expectedDates.has(f.date))
+
+    const expectedByKey = new Map(expectedFlags.map(f => [flagIdentityKey(f), f]))
+    const storedByKey = new Map(storedInScope.map(f => [flagIdentityKey(f), f]))
+
+    const matches = []      // same key, same core values — correct, leave alone
+    const mismatches = []   // same key, different values — wrong, needs fixing
+    const missing = []      // expected but not stored at all — should be added
+    const fabricated = []   // stored but not expected — shouldn't exist, candidate for deletion
+
+    for (const [key, expected] of expectedByKey) {
+      const stored = storedByKey.get(key)
+      if (!stored) {
+        missing.push(expected)
+      } else if (stored.minutes !== expected.minutes || stored.type !== expected.type) {
+        mismatches.push({ stored, expected })
+      } else {
+        matches.push(stored)
+      }
+    }
+    for (const [key, stored] of storedByKey) {
+      if (!expectedByKey.has(key)) fabricated.push(stored)
+    }
+
+    if (matches.length || mismatches.length || missing.length || fabricated.length) {
+      report.push({ employeeName: name, employeeId: empId, notFound: false, matches, mismatches, missing, fabricated })
+    }
+  }
+
+  return report
+}
+
 export async function updateFlagStatus(employeeId, flagId, status, note = '') {
   await updateDoc(doc(db, 'employees', employeeId, 'attendance', flagId), {
     status,
