@@ -125,6 +125,21 @@ export default function VerifyUpload() {
     setReport(prev => prev.map(e => e === emp ? { ...e, missing: [] } : e))
   }
 
+  // Deletes the wrong stored flag and saves the corrected one in its place.
+  // Used for both "wrong minutes" and "wrong type" mismatches — a type
+  // mismatch (e.g. stored as a late arrival when it should be an early
+  // departure) is fixed the same way: remove the bad record, add the
+  // correct one. saveAttendanceFlags' own duplicate check is harmless here
+  // since the bad flag is deleted first.
+  async function handleFixMismatch(emp, mismatch, index) {
+    await deleteFlags([{ employeeId: emp.employeeId, id: mismatch.stored.id }])
+    await saveAttendanceFlags(emp.employeeId, [mismatch.expected])
+    setReport(prev => prev.map(e => e === emp
+      ? { ...e, mismatches: e.mismatches.filter((_, i) => i !== index) }
+      : e
+    ))
+  }
+
   const totalMatches = report?.reduce((s, e) => s + e.matches.length, 0) || 0
   const totalMismatches = report?.reduce((s, e) => s + e.mismatches.length, 0) || 0
   const totalMissing = report?.reduce((s, e) => s + e.missing.length, 0) || 0
@@ -241,22 +256,40 @@ export default function VerifyUpload() {
                   <div className="card">
                     <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
                       <span className="card-title" style={{marginBottom:0,color:'var(--amber-txt)'}}>
-                        <i className="ti ti-edit" /> Wrong values — same date/type, different detail ({totalMismatches})
+                        <i className="ti ti-edit" /> Wrong values ({totalMismatches})
                       </span>
                     </div>
                     {report.filter(e => e.mismatches.length).map(emp => (
                       <div key={emp.employeeId}>
-                        {emp.mismatches.map((m, i) => (
-                          <div key={i} style={{padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
-                            <div style={{fontSize:13,fontWeight:500,marginBottom:4}}>{emp.employeeName} — {m.stored.date}</div>
-                            <div style={{fontSize:12,color:'var(--red-txt)'}}>Stored: {m.stored.detail}</div>
-                            <div style={{fontSize:12,color:'var(--green-txt)'}}>Should be: {m.expected.detail}</div>
-                          </div>
-                        ))}
+                        {emp.mismatches.map((m, i) => {
+                          const typeChanged = m.stored.type !== m.expected.type
+                          return (
+                            <div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                              <div style={{flex:1}}>
+                                <div style={{fontSize:13,fontWeight:500,marginBottom:4}}>
+                                  {emp.employeeName} — {m.stored.date}
+                                  {typeChanged && <span className="badge badge-danger" style={{marginLeft:8}}>Wrong type</span>}
+                                </div>
+                                <div style={{fontSize:12,color:'var(--red-txt)'}}>
+                                  Stored as <strong>{TYPE_LABELS[m.stored.type]||m.stored.type}</strong>: {m.stored.detail}
+                                </div>
+                                <div style={{fontSize:12,color:'var(--green-txt)'}}>
+                                  Should be <strong>{TYPE_LABELS[m.expected.type]||m.expected.type}</strong>: {m.expected.detail}
+                                </div>
+                              </div>
+                              <button
+                                className="btn btn-sm btn-primary"
+                                onClick={() => handleFixMismatch(emp, m, i)}
+                              >
+                                <i className="ti ti-replace" /> Fix
+                              </button>
+                            </div>
+                          )
+                        })}
                       </div>
                     ))}
                     <div style={{padding:'10px 16px',fontSize:12,color:'var(--text-sec)'}}>
-                      These need manual correction — go to each employee's profile, remove the wrong flag (treat it as fabricated), and the corrected value can be re-added via "Missing" below or a future correct upload.
+                      "Fix" deletes the wrong flag and replaces it with the correct one in a single action.
                     </div>
                   </div>
                 )}

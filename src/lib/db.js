@@ -209,26 +209,75 @@ export async function verifyFlagsAgainstSource(expectedByEmployee, employeeNameT
     const expectedDates = new Set(expectedFlags.map(f => f.date))
     const storedInScope = storedFlags.filter(f => expectedDates.has(f.date))
 
-    const expectedByKey = new Map(expectedFlags.map(f => [flagIdentityKey(f), f]))
-    const storedByKey = new Map(storedInScope.map(f => [flagIdentityKey(f), f]))
+    // IMPORTANT: group by DATE alone here, not flagIdentityKey() (which
+    // includes type). A flag that was wrongly typed by an older, buggy
+    // parser — e.g. a real early-departure stored as "tier2" (late) — would
+    // produce a different identity key than the correctly-typed flag the
+    // fixed parser now computes for that same date. Keying on type would
+    // make that bad flag invisible to this comparison (it would match
+    // neither "stored" nor "expected" under the same key), exactly the
+    // failure mode that let mistyped flags go undetected.
+    //
+    // A single date can legitimately hold MORE THAN ONE flag (e.g. arrived
+    // late AND left early the same day), so each date maps to an array, not
+    // a single flag — Tier 1 entries keep their own window-based grouping
+    // since several lates share one date by design.
+    function groupByDateOrWindow(flags) {
+      const map = new Map()
+      for (const f of flags) {
+        const key = f.type === 'tier1' ? flagIdentityKey(f) : f.date
+        if (!map.has(key)) map.set(key, [])
+        map.get(key).push(f)
+      }
+      return map
+    }
 
-    const matches = []      // same key, same core values — correct, leave alone
-    const mismatches = []   // same key, different values — wrong, needs fixing
+    const expectedByKey = groupByDateOrWindow(expectedFlags)
+    const storedByKey = groupByDateOrWindow(storedInScope)
+
+    const matches = []      // same date, same type & minutes — correct, leave alone
+    const mismatches = []   // same date, different type or minutes — wrong, needs fixing
     const missing = []      // expected but not stored at all — should be added
     const fabricated = []   // stored but not expected — shouldn't exist, candidate for deletion
 
-    for (const [key, expected] of expectedByKey) {
-      const stored = storedByKey.get(key)
-      if (!stored) {
-        missing.push(expected)
-      } else if (stored.minutes !== expected.minutes || stored.type !== expected.type) {
-        mismatches.push({ stored, expected })
-      } else {
-        matches.push(stored)
+    for (const [key, expectedGroup] of expectedByKey) {
+      const storedGroup = storedByKey.get(key) || []
+      // Match each expected flag against a stored flag of the SAME type on
+      // this date/window — there can be more than one flag per date, and
+      // we want a same-type pairing, not just "any flag exists here."
+      const usedStoredIds = new Set()
+      for (const expected of expectedGroup) {
+        const sameTypeStored = storedGroup.find(s => s.type === expected.type && !usedStoredIds.has(s.id))
+        if (sameTypeStored) {
+          usedStoredIds.add(sameTypeStored.id)
+          if (sameTypeStored.minutes !== expected.minutes) {
+            mismatches.push({ stored: sameTypeStored, expected })
+          } else {
+            matches.push(sameTypeStored)
+          }
+        } else {
+          // No stored flag of this exact type on this date — check if
+          // there's an UNUSED stored flag of a DIFFERENT type here, which
+          // means the old parser mistyped it (the actual bug being fixed).
+          const wrongTypeStored = storedGroup.find(s => !usedStoredIds.has(s.id))
+          if (wrongTypeStored) {
+            usedStoredIds.add(wrongTypeStored.id)
+            mismatches.push({ stored: wrongTypeStored, expected })
+          } else {
+            missing.push(expected)
+          }
+        }
+      }
+      // Anything left in storedGroup that wasn't matched or claimed as a
+      // mismatch is genuinely fabricated for this date/window.
+      for (const s of storedGroup) {
+        if (!usedStoredIds.has(s.id)) fabricated.push(s)
       }
     }
-    for (const [key, stored] of storedByKey) {
-      if (!expectedByKey.has(key)) fabricated.push(stored)
+    for (const [key, storedGroup] of storedByKey) {
+      if (!expectedByKey.has(key)) {
+        for (const s of storedGroup) fabricated.push(s)
+      }
     }
 
     if (matches.length || mismatches.length || missing.length || fabricated.length) {
