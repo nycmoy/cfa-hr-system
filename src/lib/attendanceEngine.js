@@ -298,6 +298,8 @@ export function analyzeEmployee(shifts) {
         date: s.workdayStr,
         workday: s.workday,
         minutes: Math.abs(s.startVar),
+        schedStart: s.schedStart || '',
+        workStart: s.workStart || '',
         source: 'pdf',
       })
       continue // don't also evaluate this shift for late/early/overage
@@ -308,8 +310,8 @@ export function analyzeEmployee(shifts) {
         date: s.workdayStr,
         workday: s.workday,
         minutes: lateMins,
-        schedStart: s.schedStart,
-        workStart: s.workStart,
+        schedStart: s.schedStart || '',
+        workStart: s.workStart || '',
         source: 'csv-late-proxy',
       })
     } else if (lateMins >= TIER2_MIN) {

@@ -103,11 +103,16 @@ export async function saveAttendanceFlags(employeeId, flags) {
     }
     existingKeys.add(key) // guard against duplicates within the same upload batch too
     const ref = doc(collection(db, 'employees', employeeId, 'attendance'))
-    batch.set(ref, {
+    // stripUndefined is a safety net: Firestore rejects ANY undefined field
+    // outright, and flags can carry optional fields (schedStart, workStart,
+    // etc.) that may not always be populated depending on which code path
+    // produced them. Better to silently omit an undefined field here than
+    // crash the entire write.
+    batch.set(ref, stripUndefined({
       ...flag,
       createdAt: serverTimestamp(),
       status: flag.status || 'pending',
-    })
+    }))
     written++
   }
 
@@ -175,12 +180,23 @@ export async function findDuplicateFlags() {
 // caller (UI) controls exactly what gets removed after the person reviews
 // the findDuplicateFlags() preview.
 export async function deleteFlags(targets) {
+  // Firestore's doc() throws on a null/undefined path segment, and that
+  // throw happens synchronously while building the reference — before the
+  // batch ever runs — which can leave the whole batch (and the calling UI
+  // state) in a broken spot. Filter out any malformed target defensively
+  // rather than let one bad entry take down an otherwise-valid batch.
+  const valid = targets.filter(t => t && t.employeeId && t.id)
+  const skipped = targets.length - valid.length
+  if (skipped > 0) {
+    console.warn(`deleteFlags: skipped ${skipped} target(s) with missing employeeId or id`, targets.filter(t => !t || !t.employeeId || !t.id))
+  }
+
   const batch = writeBatch(db)
-  for (const t of targets) {
+  for (const t of valid) {
     batch.delete(doc(db, 'employees', t.employeeId, 'attendance', t.id))
   }
-  if (targets.length > 0) await batch.commit()
-  return { deleted: targets.length }
+  if (valid.length > 0) await batch.commit()
+  return { deleted: valid.length, skipped }
 }
 
 // ─── RE-VERIFY: compare re-parsed PDF flags against what's stored ────────────
