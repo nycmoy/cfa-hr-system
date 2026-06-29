@@ -43,19 +43,38 @@ export default function VerifyUpload() {
 
       setProgress({ step: 'Computing expected flags…', pct: 45 })
       const expectedByEmployee = {}
+      const reportDatesByEmployee = {}
       for (const [name, segments] of Object.entries(parsedEmployees)) {
         const shifts = pdfSegmentsToShifts(segments)
         const analysis = analyzeEmployee(shifts)
         expectedByEmployee[name] = analysis.flagsToSave || []
+        // Track EVERY date that appears in this report for this employee,
+        // not just dates that happen to produce a flag. Without this, a
+        // date where the current parser correctly produces no flag at all
+        // (e.g. a real 24-minute early departure, which is true but under
+        // the 30-minute threshold) would be invisible to the comparison —
+        // any wrong flag still sitting on that date from an older, buggy
+        // parser run would never be checked or corrected.
+        reportDatesByEmployee[name] = new Set(segments.map(s => s.date))
       }
 
       setProgress({ step: 'Loading current employees…', pct: 60 })
       const employees = await getEmployees()
       const nameToId = {}
-      for (const e of employees) nameToId[e.name] = e.id
+      for (const e of employees) {
+        // Normalize whitespace before using a name as a lookup key — some
+        // employee names were originally captured with irregular spacing
+        // (e.g. a double space between middle names from how the source
+        // report rendered them), and a fresh re-parse of the same PDF can
+        // collapse that to a single space when joining row words. Without
+        // normalizing, "Blubaugh, Hayle Krystal  Marie" (stored) and
+        // "Blubaugh, Hayle Krystal Marie" (re-parsed) look like two
+        // different people and the lookup silently fails.
+        nameToId[e.name.replace(/\s+/g, ' ').trim()] = e.id
+      }
 
       setProgress({ step: 'Comparing against what\'s stored…', pct: 75 })
-      const result = await verifyFlagsAgainstSource(expectedByEmployee, nameToId)
+      const result = await verifyFlagsAgainstSource(expectedByEmployee, nameToId, reportDatesByEmployee)
 
       setProgress({ step: 'Done', pct: 100 })
       setReport(result)
@@ -121,6 +140,13 @@ export default function VerifyUpload() {
 
   async function handleAddMissing(emp) {
     if (!emp.missing.length) return
+    if (!emp.employeeId) {
+      // notFound employees (name didn't match anyone on file) have no
+      // valid employeeId to write to — surfacing this rather than letting
+      // saveAttendanceFlags fail silently against a null/undefined id.
+      alert(`Can't add flags for "${emp.employeeName}" — no matching employee was found. Check Employees for a name that might differ only in spelling, spacing, or punctuation, then retry.`)
+      return
+    }
     await saveAttendanceFlags(emp.employeeId, emp.missing)
     setReport(prev => prev.map(e => e === emp ? { ...e, missing: [] } : e))
   }
@@ -144,6 +170,7 @@ export default function VerifyUpload() {
   const totalMismatches = report?.reduce((s, e) => s + e.mismatches.length, 0) || 0
   const totalMissing = report?.reduce((s, e) => s + e.missing.length, 0) || 0
   const totalFabricated = report?.reduce((s, e) => s + e.fabricated.length, 0) || 0
+  const notFoundEmployees = report?.filter(e => e.notFound) || []
 
   return (
     <>
@@ -222,6 +249,28 @@ export default function VerifyUpload() {
               <div className="empty-state"><i className="ti ti-circle-check" style={{color:'var(--green)'}} /><div>Nothing in this report overlaps with stored flags, or everything matches perfectly.</div></div>
             ) : (
               <>
+                {notFoundEmployees.length > 0 && (
+                  <div className="card">
+                    <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                      <span className="card-title" style={{marginBottom:0,color:'var(--red-txt)'}}>
+                        <i className="ti ti-user-question" /> Not found in Employees ({notFoundEmployees.length})
+                      </span>
+                    </div>
+                    <div style={{padding:'10px 16px',fontSize:12,color:'var(--text-sec)',borderBottom:'0.5px solid var(--border)'}}>
+                      These names from the PDF didn't match anyone in your Employees list — usually because of a small difference in spacing, punctuation, or spelling between how the name was originally entered and how it appears in this file. Flags can't be added until the name matches exactly.
+                    </div>
+                    {notFoundEmployees.map(emp => (
+                      <div key={emp.employeeName} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:13,fontWeight:500}}>"{emp.employeeName}"</div>
+                          <div style={{fontSize:12,color:'var(--text-sec)'}}>{emp.missing.length} flag{emp.missing.length!==1?'s':''} waiting to be added once matched</div>
+                        </div>
+                        <Link to="/employees" className="btn btn-sm">Check Employees</Link>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {totalFabricated > 0 && (
                   <div className="card">
                     <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -294,15 +343,15 @@ export default function VerifyUpload() {
                   </div>
                 )}
 
-                {totalMissing > 0 && (
+                {totalMissing > 0 && report.some(e => !e.notFound && e.missing.length) && (
                   <div className="card">
                     <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
                       <span className="card-title" style={{marginBottom:0,color:'var(--blue-txt)'}}>
-                        <i className="ti ti-plus" /> Missing — should exist but doesn't ({totalMissing})
+                        <i className="ti ti-plus" /> Missing — should exist but doesn't ({report.reduce((s,e)=>s+(e.notFound?0:e.missing.length),0)})
                       </span>
                     </div>
-                    {report.filter(e => e.missing.length).map(emp => (
-                      <div key={emp.employeeId} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                    {report.filter(e => !e.notFound && e.missing.length).map(emp => (
+                      <div key={emp.employeeId || emp.employeeName} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
                         <div style={{flex:1}}>
                           <div style={{fontSize:13,fontWeight:500}}>{emp.employeeName}</div>
                           <div style={{fontSize:12,color:'var(--text-sec)'}}>{emp.missing.length} flag{emp.missing.length!==1?'s':''} not yet recorded</div>

@@ -208,22 +208,40 @@ export async function deleteFlags(targets) {
 //
 // `expectedByEmployee` is { employeeName: [ flag, ... ] } as produced by
 // analyzeEmployee().flagsToSave for each employee from the re-parsed file.
-export async function verifyFlagsAgainstSource(expectedByEmployee, employeeNameToId) {
+// `expectedByEmployee` is { employeeName: [ flag, ... ] } as produced by
+// analyzeEmployee().flagsToSave for each employee from the re-parsed file.
+// `reportDatesByEmployee` is { employeeName: Set(dateStr) } — EVERY date
+// that appears anywhere in the re-uploaded report for that employee, not
+// just dates that happen to produce a flag. This second argument matters:
+// if an old, buggy parser run created a flag for a date that the CURRENT
+// (correct) parser determines doesn't warrant one at all — e.g. a 24-minute
+// early departure, which is real but under the 30-minute threshold — that
+// date would never appear in expectedFlags, and without reportDatesByEmployee
+// the comparison has no way to know this date was even covered by the file,
+// so a wrong stored flag on it would silently never be checked at all.
+export async function verifyFlagsAgainstSource(expectedByEmployee, employeeNameToId, reportDatesByEmployee = {}) {
   const report = [] // one entry per employee that has either expected or stored flags in scope
 
   for (const [name, expectedFlags] of Object.entries(expectedByEmployee)) {
-    const empId = employeeNameToId[name]
+    // Same normalization applied when nameToId was built — collapse any
+    // run of whitespace to a single space, since the freshly re-parsed
+    // name and the originally stored name can differ only in spacing
+    // (e.g. a double space between middle names) and would otherwise fail
+    // to match as the same person.
+    const normalizedName = name.replace(/\s+/g, ' ').trim()
+    const empId = employeeNameToId[normalizedName]
     if (!empId) {
       report.push({ employeeName: name, employeeId: null, notFound: true, matches: [], mismatches: [], missing: expectedFlags, fabricated: [] })
       continue
     }
 
     const storedFlags = await getAttendanceFlags(empId)
-    // Only compare against stored flags whose date falls within the dates
-    // covered by this re-uploaded file, so we don't flag unrelated weeks
-    // as "fabricated" just because they aren't in this particular PDF.
-    const expectedDates = new Set(expectedFlags.map(f => f.date))
-    const storedInScope = storedFlags.filter(f => expectedDates.has(f.date))
+    // Scope to every date this report actually covers for this employee —
+    // NOT just the dates that happen to have an expected flag. Using only
+    // expected-flag dates would make a wrongly-stored flag on a now-below-
+    // threshold date invisible to this whole comparison (see note above).
+    const reportDates = reportDatesByEmployee[name] || new Set(expectedFlags.map(f => f.date))
+    const storedInScope = storedFlags.filter(f => reportDates.has(f.date))
 
     // IMPORTANT: group by DATE alone here, not flagIdentityKey() (which
     // includes type). A flag that was wrongly typed by an older, buggy
