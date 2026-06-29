@@ -58,6 +58,20 @@ export async function updateEmployee(id, data) {
 }
 
 // ─── ATTENDANCE FLAGS ─────────────────────────────────────────────────────────
+// Normalizes a date string to MM/DD/YYYY with zero-padding, regardless of
+// how it arrived (e.g. "4/16/2026" and "04/16/2026" must be treated as the
+// same day). This is a safety net on top of always WRITING dates in the
+// canonical padded format — older records created before that fix may still
+// have inconsistent padding, and this keeps duplicate detection correct for
+// them too without requiring a data migration.
+function normalizeDateStr(dateStr) {
+  if (!dateStr) return dateStr
+  const parts = dateStr.split('/')
+  if (parts.length !== 3) return dateStr
+  const [m, d, y] = parts
+  return `${m.padStart(2, '0')}/${d.padStart(2, '0')}/${y}`
+}
+
 // Builds a stable identity key for a flag so we can detect duplicates
 // across uploads. Two flags are "the same" if they're the same type, on
 // the same date (or window, for Tier 1 patterns), for the same employee.
@@ -67,7 +81,7 @@ export function flagIdentityKey(flag) {
   if (flag.type === 'tier1') {
     return `tier1::${flag.windowLabel}`
   }
-  return `${flag.type}::${flag.date}`
+  return `${flag.type}::${normalizeDateStr(flag.date)}`
 }
 
 export async function saveAttendanceFlags(employeeId, flags) {

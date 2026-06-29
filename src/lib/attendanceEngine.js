@@ -26,6 +26,20 @@ export function windowStartDate(idx) {
   return new Date(ANCHOR.getTime() + idx * WINDOW_DAYS * 24 * 60 * 60 * 1000)
 }
 
+// Canonical date string format used everywhere a Date becomes a string for
+// storage or comparison: always MM/DD/YYYY, always zero-padded. Using
+// toLocaleDateString() directly is NOT safe here — it omits the leading
+// zero (e.g. "4/16/2026" instead of "04/16/2026"), and since the PDF parser
+// reads zero-padded dates straight from the report text, the same real day
+// would get two different string identities depending on which upload path
+// produced it — exactly the kind of mismatch that lets duplicates slip past
+// flagIdentityKey's exact string match.
+export function formatDateMMDDYYYY(d) {
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${mm}/${dd}/${d.getFullYear()}`
+}
+
 export function parseCSVRow(row) {
   const workday = new Date(row.WORKDAY)
   const startVar = parseInt(row.START_VARIANCE) || 0
@@ -33,7 +47,7 @@ export function parseCSVRow(row) {
   return {
     name: row.FULL_NAME?.trim().replace(/^"|"$/g, '') || '',
     workday,
-    workdayStr: workday.toLocaleDateString('en-US'),
+    workdayStr: formatDateMMDDYYYY(workday),
     schedStart: row.SCHED_START,
     schedEnd: row.SCHED_END,
     workStart: row.WORK_START,
@@ -401,6 +415,16 @@ export function analyzeEmployee(shifts) {
     lates.sort((a, b) => a.workday - b.workday)
 
     if (lates.length >= TIER1_THRESHOLD) {
+      // Build "9 mins late on 02/04/2026 and 7 minutes late on 02/09/2026"
+      // style detail — explicit dates and minutes instead of a generic
+      // count, so the documentation reads like a real incident summary.
+      const parts = lates.map(l => `${l.minutes} ${l.minutes === 1 ? 'minute' : 'minutes'} late on ${l.date}`)
+      const detailText = parts.length === 2
+        ? parts.join(' and ')
+        : parts.length > 2
+          ? parts.slice(0, -1).join(', ') + ', and ' + parts[parts.length - 1]
+          : parts[0]
+
       tier1Docs.push({
         type: 'tier1',
         windowIdx: idx,
@@ -409,7 +433,7 @@ export function analyzeEmployee(shifts) {
         lates,
         workday: lates[0].workday,
         date: lates[0].date,
-        detail: `${lates.length} minor lates (5–9.9 min) within payroll period ${periodLabel} — triggers documentation`,
+        detail: detailText,
         severity: 'medium',
         status: 'pending',
       })
