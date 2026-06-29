@@ -236,12 +236,21 @@ export async function verifyFlagsAgainstSource(expectedByEmployee, employeeNameT
     }
 
     const storedFlags = await getAttendanceFlags(empId)
-    // Scope to every date this report actually covers for this employee —
-    // NOT just the dates that happen to have an expected flag. Using only
-    // expected-flag dates would make a wrongly-stored flag on a now-below-
-    // threshold date invisible to this whole comparison (see note above).
+    // Determine which dates this comparison should examine. This must
+    // include BOTH:
+    //   (a) every date that appears in the freshly re-parsed report, and
+    //   (b) every date any STORED flag claims for this employee.
+    // Filtering stored flags down to only dates from (a) — which is what
+    // an earlier version of this function did — makes it structurally
+    // impossible to detect a flag sitting on a date the employee wasn't
+    // even scheduled to work at all (no rows for that date exist anywhere
+    // in the source report). That flag would be excluded from the
+    // comparison before the fabricated-detection step ever runs, so it
+    // would never be flagged no matter how many times this tool runs.
     const reportDates = reportDatesByEmployee[name] || new Set(expectedFlags.map(f => f.date))
-    const storedInScope = storedFlags.filter(f => reportDates.has(f.date))
+    const storedDates = new Set(storedFlags.map(f => f.date))
+    const allRelevantDates = new Set([...reportDates, ...storedDates])
+    const storedInScope = storedFlags.filter(f => allRelevantDates.has(f.date))
 
     // IMPORTANT: group by DATE alone here, not flagIdentityKey() (which
     // includes type). A flag that was wrongly typed by an older, buggy
