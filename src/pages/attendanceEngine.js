@@ -325,27 +325,28 @@ export function analyzeEmployee(shifts) {
       continue; 
     }
 
-    // ── 2. EVALUATE INDIVIDUAL SEGMENTS (Partial Days) ────────────────────────
+ // ── 2. EVALUATE INDIVIDUAL SEGMENTS (Partial Days) ────────────────────────
     for (const s of daySegments) {
       const lateMins = s.startVar < 0 ? Math.abs(s.startVar) : 0
       const earlyMins = s.endVar < 0 ? Math.abs(s.endVar) : 0
       const overMins = s.endVar > 0 ? s.endVar : 0
 
-      // If they missed a segment but worked another part of the day (e.g., missed lunch, worked dinner)
+      // CRITICAL FIX: If this specific segment was a no-show/entirely missed,
+      // log it and skip late/early evaluation so it doesn't double-flag.
       if (s.isNoShowFromPDF || lateMins >= 120) {
         noshowFlags.push({
           type: 'noshow', 
           date: dateStr,
           workday: s.workday,
           minutes: lateMins,
-          detail: `Missed Segment — did not clock in for this segment, but worked elsewhere on this date.`,
+          detail: `Missed Segment — did not clock in for this scheduled segment.`,
           schedStart: s.schedStart,
           workStart: s.workStart,
           severity: 'high', 
           status: 'pending',
           segmentCount: 1,
         })
-        continue; // Skip late/early evaluation for this specific missed segment
+        continue; // Prevents the code below from seeing this as a late + early departure!
       }
 
       if (lateMins >= TIER2_MIN) {
@@ -368,7 +369,6 @@ export function analyzeEmployee(shifts) {
         })
       }
 
-      // FIX: Strictly greater than EARLY_DEP_MIN (30)
       if (earlyMins > EARLY_DEP_MIN) {
         earlyFlags.push({
           type: 'early',
@@ -381,6 +381,18 @@ export function analyzeEmployee(shifts) {
         })
       }
 
+      if (overMins > OVERAGE_HRS * 60) {
+        overageFlags.push({
+          type: 'overage',
+          date: s.workdayStr,
+          workday: s.workday,
+          minutes: overMins,
+          detail: `${(overMins / 60).toFixed(1)} hrs over schedule — possible missed punch`,
+          severity: 'review',
+          status: 'pending',
+        })
+      }
+    }
       // FIX: Strictly greater than OVERAGE_HRS (5 hours)
       // Note: I noticed your OVERAGE_HRS constant is 5, so I updated this to use the constant correctly!
       if (overMins > OVERAGE_HRS * 60) {
