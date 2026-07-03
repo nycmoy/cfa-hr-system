@@ -7,7 +7,12 @@ import { getEmployees, verifyFlagsAgainstSource, deleteFlags, saveAttendanceFlag
 const TYPE_LABELS = {
   noshow: 'No-show', tier2: '10+ min late', tier1: 'Tier 1 pattern',
   early: 'Early departure', overage: 'Overage', excessive_absence: 'Excessive absences',
-}
+// Create a unique key for each flag to track dismissals
+  // Added employee name to prevent cross-employee collision!
+  const flagIdentityKey = (f) => {
+    const emp = f.name || f.employeeName || 'unknown';
+    return `${emp}-${f.type}-${f.date}-${f.workday ? f.workday.getTime() : ''}-${f.minutes || 0}-${f.count || 0}`
+  }
 
 export default function VerifyUpload() {
   const [stage, setStage] = useState('idle') // idle | processing | done | error
