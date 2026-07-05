@@ -26,6 +26,14 @@ export function windowStartDate(idx) {
   return new Date(ANCHOR.getTime() + idx * WINDOW_DAYS * 24 * 60 * 60 * 1000)
 }
 
+// Canonical date string format used everywhere a Date becomes a string for
+// storage or comparison: always MM/DD/YYYY, always zero-padded. Using
+// toLocaleDateString() directly is NOT safe here — it omits the leading
+// zero (e.g. "4/16/2026" instead of "04/16/2026"), and since the PDF parser
+// reads zero-padded dates straight from the report text, the same real day
+// would get two different string identities depending on which upload path
+// produced it — exactly the kind of mismatch that lets duplicates slip past
+// flagIdentityKey's exact string match.
 export function formatDateMMDDYYYY(d) {
   const mm = String(d.getMonth() + 1).padStart(2, '0')
   const dd = String(d.getDate()).padStart(2, '0')
@@ -52,6 +60,14 @@ export function parseCSVRow(row) {
   }
 }
 
+// ─── DOCUMENTATION AUTO-FILL: summarize an employee's flag history ───────────
+// Given the employee's full list of saved attendance flags (from Firestore),
+// produces the counts + date lists needed to pre-fill a disciplinary notice:
+// e.g. "3 Absences (03/22/26, 04/13/26, 05/06/26)  2 Lates (04/23/26, 06/06/26)"
+//
+// "Absence" = no-show flags. "Late" = every individual Tier 2 late, plus
+// every individual date inside a Tier 1 pattern flag (since each Tier 1
+// flag can bundle multiple actual late dates together).
 export function summarizeFlagHistory(flags) {
   const absences = []
   const lates = []
@@ -68,6 +84,8 @@ export function summarizeFlagHistory(flags) {
     }
   }
 
+  // De-dupe by date (a date should only ever count once toward "lates" even
+  // if it somehow appears in more than one flag) and sort chronologically.
   const dedupeSort = (arr) => {
     const seen = new Map()
     for (const item of arr) {
@@ -99,6 +117,23 @@ export function summarizeFlagHistory(flags) {
   }
 }
 
+// ─── PDF PARSING (Actual vs. Scheduled Punch Variance Report) ───────────────
+// This report format preserves a no-show signature that the CSV export
+// drops entirely: when an employee never clocks in for a scheduled shift,
+// the line shows the SCHEDULED start/end times (not an actual punch) with
+// the clock-in AND clock-out variance both equal to the same large negative
+// value — the whole shift duration was missed on both ends.
+//
+// IMPORTANT: this report's columns are NOT reliably separable by token
+// order in flattened text. A continuation line representing only a
+// clock-out event can show its single variance value in either the first
+// OR second token slot depending on spacing/whitespace collapsing — token
+// order alone misreads a clock-out variance as a clock-in variance (and
+// vice versa). The only reliable signal is each word's horizontal (x)
+// position on the page, which maps to a fixed column regardless of how
+// many other columns are blank ("--") on that line. These ranges were
+// measured directly from the report's column headers and validated against
+// real multi-segment-shift and no-show rows.
 const COLUMNS = {
   date: [40, 190],
   actualTime: [190, 245],
@@ -141,11 +176,21 @@ function parseDateMMDDYYYY(str) {
   return new Date(yyyy, mm - 1, dd)
 }
 
+/**
+ * Parses positioned word data (from extractPdfWords) into
+ * { employeeName: [ { date, ciVar, coVar, isNoShow } ] } by classifying
+ * every word into its report column by x-coordinate, then grouping words
+ * into physical rows by y-coordinate. This is the reliable replacement for
+ * token-order-based text parsing — see the column-position note above.
+ *
+ * `pages` is an array of pages, each an array of { text, x0, x1, top }.
+ */
 export function parsePunchVariancePDFFromWords(pages) {
   const employees = {}
   let currentEmp = null
 
   for (const pageWords of pages) {
+    // Group into physical rows by top-coordinate, tolerant of small jitter
     const rowBuckets = new Map()
     for (const w of pageWords) {
       const key = Math.round(w.top / 3) * 3
@@ -159,6 +204,8 @@ export function parsePunchVariancePDFFromWords(pages) {
       const texts = rowWords.map(w => w.text)
       const fullLine = texts.join(' ')
 
+      // Skip rows that are entirely repeated column headers (these can
+      // appear mid-document at every page break, not just at position 0)
       if (texts.every(t => HEADER_WORDS.has(t) || t === '|' || t === '-')) continue
       if (PAGE_FOOTER_RE.test(fullLine)) continue
       if (DATE_RANGE_RE.test(fullLine.trim())) continue
@@ -194,12 +241,21 @@ export function parsePunchVariancePDFFromWords(pages) {
           ciVar, coVar, isNoShow,
         })
       }
+      // Rows with a recognizable date in another column position, or pure
+      // continuation rows showing only additional time tokens with no new
+      // variance data, contribute nothing further — each (date, ciVar,
+      // coVar) triple is captured fully on its own row in this column
+      // layout, unlike the old multi-line "combine with next line" model.
     }
   }
 
   return employees
 }
 
+// Converts the PDF parser's output into the same shape analyzeEmployee()
+// expects from CSV rows, so both upload paths can share the same rule
+// engine. PDF-sourced no-shows skip straight to a noshow flag; everything
+// else maps onto the equivalent startVar/endVar fields.
 export function pdfSegmentsToShifts(segments) {
   return segments.map(s => ({
     workday: s.workday,
@@ -344,6 +400,10 @@ export function analyzeEmployee(shifts) {
   }
 
   // ── 4. TIER 1: fixed 2-week PAYROLL PERIODS, anchored to Jun 7, 2026 ─────────
+  // Per the handbook, this is a window-based system tied to fixed payroll
+  // periods (Jun 7-20, Jun 21-Jul 4, ...) — NOT a true rolling 14-day window.
+  // A late on the last day of one period and the first day of the next are
+  // in DIFFERENT periods and do not combine, even though they're adjacent.
   const tier1ByPeriod = {}
   for (const l of tier1Lates) {
     const idx = getWindowIndex(l.workday)
@@ -360,6 +420,9 @@ export function analyzeEmployee(shifts) {
     lates.sort((a, b) => a.workday - b.workday)
 
     if (lates.length >= TIER1_THRESHOLD) {
+      // Build "9 mins late on 02/04/2026 and 7 minutes late on 02/09/2026"
+      // style detail — explicit dates and minutes instead of a generic
+      // count, so the documentation reads like a real incident summary.
       const parts = lates.map(l => `${l.minutes} ${l.minutes === 1 ? 'minute' : 'minutes'} late on ${l.date}`)
       const detailText = parts.length === 2
         ? parts.join(' and ')
@@ -396,6 +459,8 @@ export function analyzeEmployee(shifts) {
   }
 
   // ── EXCESSIVE ABSENCES: 3+ absences (excused or not) in a TRUE rolling 3 months ──
+  // Unlike Tier 1 lates, this is not tied to fixed payroll periods — it's a
+  // genuine rolling 90-day lookback from each absence.
   const ABSENCE_WINDOW_DAYS = 90
   const ABSENCE_THRESHOLD = 3
   const excessiveAbsenceFlags = []
@@ -430,12 +495,13 @@ export function analyzeEmployee(shifts) {
   return {
     tier2: tier2Flags,
     tier1Docs,
-    tier1Info: tier1InfoOnly,  
+    tier1Info: tier1InfoOnly,  // not saved — display only in baseline view
     noshow: noshowFlags,
     early: earlyFlags,
     overage: overageFlags,
     excessiveAbsence: excessiveAbsenceFlags,
     docCount,
+    // Only flags that get saved to Firestore:
     flagsToSave: [...noshowFlags, ...tier2Flags, ...tier1Docs, ...earlyFlags, ...overageFlags, ...excessiveAbsenceFlags],
   }
 }
