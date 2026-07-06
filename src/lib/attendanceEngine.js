@@ -233,7 +233,26 @@ export function parsePunchVariancePDFFromWords(pages) {
         const coToken = (byCol.coVar || []).join(' ').trim() || null
         const ciVar = toSignedMinutes(ciToken)
         const coVar = toSignedMinutes(coToken)
-        const isNoShow = ciVar !== null && coVar !== null && ciVar === coVar && ciVar <= -60
+
+        // Primary no-show signal: both variances equal and large-negative,
+        // meaning the same full-shift duration was missed on both ends.
+        const isNoShowByVariance = ciVar !== null && coVar !== null && ciVar === coVar && ciVar <= -60
+
+        // Secondary no-show signal: the actual-time column is entirely
+        // empty on this row, meaning no real clock-in event happened at
+        // all. This catches cases where ciVar and coVar represent the same
+        // absence but aren't exactly equal (e.g. different rounding for
+        // the start and end, or a split-shift segment with no actual punch
+        // whose two variances happen to differ by a minute), which would
+        // cause the primary check to silently fail and the large negative
+        // ciVar to fall through into the "X min late" bucket instead.
+        const hasActualPunch = (byCol.actualTime || []).length > 0
+        const isNoShowByBlankActual = !hasActualPunch && (
+          (ciVar !== null && ciVar <= -60) ||
+          (coVar !== null && coVar <= -60)
+        )
+
+        const isNoShow = isNoShowByVariance || isNoShowByBlankActual
 
         employees[currentEmp].push({
           date: dateText,

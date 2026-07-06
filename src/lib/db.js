@@ -72,6 +72,18 @@ function normalizeDateStr(dateStr) {
   return `${m.padStart(2, '0')}/${d.padStart(2, '0')}/${y}`
 }
 
+// Parses an "MM/DD/YYYY" (or "M/D/YYYY") string into a real Date for range
+// comparisons. Returns null rather than throwing on anything malformed —
+// callers treat a null as "can't determine, don't exclude based on range."
+function parseSlashDate(dateStr) {
+  if (!dateStr) return null
+  const parts = dateStr.split('/')
+  if (parts.length !== 3) return null
+  const [m, d, y] = parts.map(Number)
+  if (!m || !d || !y) return null
+  return new Date(y, m - 1, d)
+}
+
 // Builds a stable identity key for a flag so we can detect duplicates
 // across uploads. Two flags are "the same" if they're the same type, on
 // the same date (or window, for Tier 1 patterns), for the same employee.
@@ -219,7 +231,16 @@ export async function deleteFlags(targets) {
 // date would never appear in expectedFlags, and without reportDatesByEmployee
 // the comparison has no way to know this date was even covered by the file,
 // so a wrong stored flag on it would silently never be checked at all.
-export async function verifyFlagsAgainstSource(expectedByEmployee, employeeNameToId, reportDatesByEmployee = {}) {
+// `reportDateRange` is { start: Date, end: Date } — the calendar span this
+// PDF actually covers. THIS IS LOAD-BEARING: without it, "fabricated"
+// detection would compare a stored flag against an `expected` set built
+// from only THIS upload, and since a single PDF only ever covers one
+// week (or a few), any legitimate flag from a DIFFERENT week — e.g. a
+// real Tier 1 pattern from February, while you're re-verifying a June
+// report — would look "stored but not expected" and get deleted as a
+// false positive, even though it was never wrong and was never even in
+// scope for this particular re-verification.
+export async function verifyFlagsAgainstSource(expectedByEmployee, employeeNameToId, reportDatesByEmployee = {}, reportDateRange = null) {
   const report = [] // one entry per employee that has either expected or stored flags in scope
 
   for (const [name, expectedFlags] of Object.entries(expectedByEmployee)) {
@@ -236,20 +257,30 @@ export async function verifyFlagsAgainstSource(expectedByEmployee, employeeNameT
     }
 
     const storedFlags = await getAttendanceFlags(empId)
+
+    // A stored flag is only ELIGIBLE to be compared at all if its date
+    // falls inside the calendar range this specific PDF covers. This is
+    // what keeps a legitimate flag from an entirely different week safe
+    // from being judged "fabricated" just because this upload's re-parse
+    // has no knowledge of that other week.
+    function inReportRange(dateStr) {
+      if (!reportDateRange) return true // no range info supplied — fall back to old (date-set) behavior below
+      const d = parseSlashDate(dateStr)
+      if (!d) return true // unparseable date string — don't silently exclude it, let the date-set check decide
+      return d >= reportDateRange.start && d <= reportDateRange.end
+    }
+
     // Determine which dates this comparison should examine. This must
     // include BOTH:
     //   (a) every date that appears in the freshly re-parsed report, and
-    //   (b) every date any STORED flag claims for this employee.
-    // Filtering stored flags down to only dates from (a) — which is what
-    // an earlier version of this function did — makes it structurally
-    // impossible to detect a flag sitting on a date the employee wasn't
-    // even scheduled to work at all (no rows for that date exist anywhere
-    // in the source report). That flag would be excluded from the
-    // comparison before the fabricated-detection step ever runs, so it
-    // would never be flagged no matter how many times this tool runs.
+    //   (b) every date any STORED flag claims for this employee — but
+    //       ONLY if that date is actually inside this report's calendar
+    //       range (see inReportRange above). A flag dated outside the
+    //       range is left alone entirely; it's simply not what this
+    //       upload is able to verify one way or the other.
     const reportDates = reportDatesByEmployee[name] || new Set(expectedFlags.map(f => f.date))
-    const storedDates = new Set(storedFlags.map(f => f.date))
-    const allRelevantDates = new Set([...reportDates, ...storedDates])
+    const storedDatesInRange = new Set(storedFlags.map(f => f.date).filter(inReportRange))
+    const allRelevantDates = new Set([...reportDates, ...storedDatesInRange])
     const storedInScope = storedFlags.filter(f => allRelevantDates.has(f.date))
 
     // IMPORTANT: group by DATE alone here, not flagIdentityKey() (which
@@ -490,6 +521,56 @@ export async function getAllRatings() {
     ratings.forEach(r => all.push({ ...r, employeeId: emp.id, employeeName: emp.name }))
   }
   return all
+}
+
+// ─── TEAMS ────────────────────────────────────────────────────────────────────
+// Teams are stored as a top-level `teams` collection (name, createdAt).
+// Each employee record carries a `teams: []` array of team IDs.
+
+export async function getTeams() {
+  const snap = await getDocs(query(collection(db, 'teams'), orderBy('name')))
+  if (snap.empty) {
+    await seedDefaultTeams()
+    return getTeams()
+  }
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+}
+
+async function seedDefaultTeams() {
+  const defaults = ['Trainer Team', 'Hospitality Team', 'Safety Team']
+  const batch = writeBatch(db)
+  for (const name of defaults) {
+    const id = name.toLowerCase().replace(/[^a-z0-9]/g, '_')
+    batch.set(doc(db, 'teams', id), { name, createdAt: serverTimestamp() })
+  }
+  await batch.commit()
+}
+
+export async function addTeam(name) {
+  const id = name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/__+/g, '_')
+  await setDoc(doc(db, 'teams', id), { name, createdAt: serverTimestamp() })
+  return id
+}
+
+export async function deleteTeam(id) {
+  await deleteDoc(doc(db, 'teams', id))
+}
+
+export async function updateEmployeeTeams(employeeId, teamIds) {
+  await updateDoc(doc(db, 'employees', employeeId), {
+    teams: teamIds,
+    updatedAt: serverTimestamp(),
+  })
+}
+
+export async function getTeamMembers(teamId) {
+  const snap = await getDocs(
+    query(collection(db, 'employees'),
+      where('status', '==', 'active'),
+      where('teams', 'array-contains', teamId)
+    )
+  )
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }))
 }
 
 // ─── FOLLOW-UPS ───────────────────────────────────────────────────────────────

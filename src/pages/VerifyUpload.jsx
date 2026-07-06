@@ -7,12 +7,7 @@ import { getEmployees, verifyFlagsAgainstSource, deleteFlags, saveAttendanceFlag
 const TYPE_LABELS = {
   noshow: 'No-show', tier2: '10+ min late', tier1: 'Tier 1 pattern',
   early: 'Early departure', overage: 'Overage', excessive_absence: 'Excessive absences',
-// Create a unique key for each flag to track dismissals
-  // Added employee name to prevent cross-employee collision!
-  const flagIdentityKey = (f) => {
-    const emp = f.name || f.employeeName || 'unknown';
-    return `${emp}-${f.type}-${f.date}-${f.workday ? f.workday.getTime() : ''}-${f.minutes || 0}-${f.count || 0}`
-  }
+}
 
 export default function VerifyUpload() {
   const [stage, setStage] = useState('idle') // idle | processing | done | error
@@ -49,6 +44,7 @@ export default function VerifyUpload() {
       setProgress({ step: 'Computing expected flags…', pct: 45 })
       const expectedByEmployee = {}
       const reportDatesByEmployee = {}
+      let minDate = null, maxDate = null
       for (const [name, segments] of Object.entries(parsedEmployees)) {
         const shifts = pdfSegmentsToShifts(segments)
         const analysis = analyzeEmployee(shifts)
@@ -61,7 +57,20 @@ export default function VerifyUpload() {
         // any wrong flag still sitting on that date from an older, buggy
         // parser run would never be checked or corrected.
         reportDatesByEmployee[name] = new Set(segments.map(s => s.date))
+        for (const s of segments) {
+          if (!s.workday) continue
+          if (!minDate || s.workday < minDate) minDate = s.workday
+          if (!maxDate || s.workday > maxDate) maxDate = s.workday
+        }
       }
+      // The calendar range this PDF actually covers — used to make sure
+      // "fabricated" detection only ever judges flags whose date falls
+      // INSIDE the week(s) this specific file reports on. Without this, a
+      // legitimate flag from a different week (e.g. a real Tier 1 pattern
+      // from February) would look "fabricated" the moment you re-verify
+      // ANY other week's PDF, since that PDF's own re-parse has zero
+      // knowledge of February and would never list it as "expected."
+      const reportDateRange = (minDate && maxDate) ? { start: minDate, end: maxDate } : null
 
       setProgress({ step: 'Loading current employees…', pct: 60 })
       const employees = await getEmployees()
@@ -79,7 +88,7 @@ export default function VerifyUpload() {
       }
 
       setProgress({ step: 'Comparing against what\'s stored…', pct: 75 })
-      const result = await verifyFlagsAgainstSource(expectedByEmployee, nameToId, reportDatesByEmployee)
+      const result = await verifyFlagsAgainstSource(expectedByEmployee, nameToId, reportDatesByEmployee, reportDateRange)
 
       setProgress({ step: 'Done', pct: 100 })
       setReport(result)
