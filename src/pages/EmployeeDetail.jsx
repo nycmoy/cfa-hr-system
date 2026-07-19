@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { getEmployee, getAttendanceFlags, getDocuments, getRatings, getFollowUps, updateEmployee, getPositions, getTraining } from '../lib/db'
+import { getEmployee, getAttendanceFlags, getDocuments, getRatings, getFollowUps, updateEmployee, getPositions, getTraining, getTeams, updateEmployeeTeams, addTeam } from '../lib/db'
 import { DISCIPLINE_LABEL, DISCIPLINE_BADGE } from '../lib/disciplineLevels'
 import { applicablePositions } from '../lib/positionRules'
 
@@ -18,11 +18,16 @@ export default function EmployeeDetail() {
   const [followups, setFollowups] = useState([])
   const [positions, setPositions] = useState([])
   const [training, setTraining] = useState([])
+  const [teams, setTeams] = useState([])
+  const [empTeams, setEmpTeams] = useState([])
   const [tab, setTab] = useState('overview')
   const [loading, setLoading] = useState(true)
   const [showEdit, setShowEdit] = useState(false)
+  const [savingTeams, setSavingTeams] = useState(false)
+  const [showAddTeam, setShowAddTeam] = useState(false)
+  const [newTeamName, setNewTeamName] = useState('')
+  const [addingTeam, setAddingTeam] = useState(false)
 
-  // Edit form state
   const [eInitialStart, setEInitialStart] = useState('')
   const [eCurrentPos, setECurrentPos] = useState('')
   const [eCurrentPosStart, setECurrentPosStart] = useState('')
@@ -30,22 +35,38 @@ export default function EmployeeDetail() {
   const [eLeadership, setELeadership] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  useEffect(() => {
-    load()
-  }, [id])
+  useEffect(() => { load() }, [id])
 
   async function load() {
-    const [e, f, d, r, fu, p, tr] = await Promise.all([
-      getEmployee(id),
-      getAttendanceFlags(id),
-      getDocuments(id),
-      getRatings(id),
-      getFollowUps(id),
-      getPositions(),
-      getTraining(id),
+    const [e, f, d, r, fu, p, tr, t] = await Promise.all([
+      getEmployee(id), getAttendanceFlags(id), getDocuments(id),
+      getRatings(id), getFollowUps(id), getPositions(), getTraining(id), getTeams(),
     ])
-    setEmp(e); setFlags(f); setDocs(d); setRatings(r); setFollowups(fu); setPositions(p); setTraining(tr)
+    setEmp(e); setFlags(f); setDocs(d); setRatings(r); setFollowups(fu)
+    setPositions(p); setTraining(tr); setTeams(t)
+    setEmpTeams(e?.teams || [])
     setLoading(false)
+  }
+
+  async function toggleTeam(teamId) {
+    setSavingTeams(true)
+    const next = empTeams.includes(teamId)
+      ? empTeams.filter(t => t !== teamId)
+      : [...empTeams, teamId]
+    setEmpTeams(next)
+    await updateEmployeeTeams(id, next)
+    setSavingTeams(false)
+  }
+
+  async function handleAddTeam() {
+    if (!newTeamName.trim()) return
+    setAddingTeam(true)
+    await addTeam(newTeamName.trim())
+    const updated = await getTeams()
+    setTeams(updated)
+    setNewTeamName('')
+    setShowAddTeam(false)
+    setAddingTeam(false)
   }
 
   function openEdit() {
@@ -61,18 +82,13 @@ export default function EmployeeDetail() {
     setSaving(true)
     try {
       await updateEmployee(id, {
-        initialStartDate: eInitialStart,
-        currentPosition: eCurrentPos,
-        currentPositionStartDate: eCurrentPosStart,
-        position: eCurrentPos,
-        area: eArea,
-        leadershipTrack: eLeadership,
+        initialStartDate: eInitialStart, currentPosition: eCurrentPos,
+        currentPositionStartDate: eCurrentPosStart, position: eCurrentPos,
+        area: eArea, leadershipTrack: eLeadership,
       })
       await load()
       setShowEdit(false)
-    } finally {
-      setSaving(false)
-    }
+    } finally { setSaving(false) }
   }
 
   if (loading) return <div style={{padding:40,textAlign:'center',color:'var(--text-sec)'}}>Loading profile...</div>
@@ -80,9 +96,7 @@ export default function EmployeeDetail() {
 
   const level = emp.leadershipStatus || emp.disciplineLevel || 'good_standing'
   const docFlags = flags.filter(f => ['noshow','tier2','tier1'].includes(f.type) && f.status === 'pending')
-  const activeEarly = flags.filter(f => f.type === 'early')
 
-  // Rating averages by position
   const ratingsByPos = {}
   for (const r of ratings) {
     if (!ratingsByPos[r.positionId]) ratingsByPos[r.positionId] = []
@@ -90,7 +104,10 @@ export default function EmployeeDetail() {
   }
 
   const ratingColor = v => v >= 8 ? 'var(--green)' : v >= 5 ? 'var(--amber)' : 'var(--red)'
-  const scoreClass = v => v >= 8 ? {bg:'var(--green-lt)',color:'var(--green-txt)'} : v >= 5 ? {bg:'var(--amber-lt)',color:'var(--amber-txt)'} : {bg:'var(--red-lt)',color:'var(--red-txt)'}
+  const scoreClass = v => v >= 8
+    ? {background:'var(--green-lt)',color:'var(--green-txt)'}
+    : v >= 5 ? {background:'var(--amber-lt)',color:'var(--amber-txt)'}
+    : {background:'var(--red-lt)',color:'var(--red-txt)'}
 
   return (
     <>
@@ -101,17 +118,12 @@ export default function EmployeeDetail() {
           <span className="mono">{id}</span>
         </div>
         <div style={{display:'flex',gap:8}}>
-          <button className="btn" onClick={openEdit}>
-            <i className="ti ti-pencil" aria-hidden="true" /> Edit profile
-          </button>
-          <Link to={`/documentation?empId=${id}`} className="btn btn-primary">
-            <i className="ti ti-file-plus" aria-hidden="true" /> New documentation
-          </Link>
+          <button className="btn" onClick={openEdit}><i className="ti ti-pencil" aria-hidden="true" /> Edit profile</button>
+          <Link to={`/documentation?empId=${id}`} className="btn btn-primary"><i className="ti ti-file-plus" aria-hidden="true" /> New documentation</Link>
         </div>
       </div>
 
       <div className="content">
-        {/* Header card */}
         <div className="card">
           <div className="card-body">
             <div style={{display:'flex',alignItems:'flex-start',gap:16,marginBottom:16}}>
@@ -126,20 +138,58 @@ export default function EmployeeDetail() {
                   <span className="badge badge-info">{AREA_LABEL[emp.area]||'FOH + BOH'}</span>
                   {emp.leadershipTrack && <span className="badge badge-warn"><i className="ti ti-crown" style={{fontSize:11}} /> Leadership track</span>}
                 </div>
-                <div style={{display:'flex',gap:16,fontSize:12,color:'var(--text-sec)'}}>
+                <div style={{fontSize:12,color:'var(--text-sec)',display:'flex',gap:16}}>
                   <span><i className="ti ti-calendar" aria-hidden="true" /> Hired: {emp.initialStartDate ? new Date(emp.initialStartDate).toLocaleDateString() : '—'}</span>
-                  <span><i className="ti ti-calendar-event" aria-hidden="true" /> In current position since: {emp.currentPositionStartDate ? new Date(emp.currentPositionStartDate).toLocaleDateString() : '—'}</span>
+                  <span><i className="ti ti-calendar-event" aria-hidden="true" /> Current position since: {emp.currentPositionStartDate ? new Date(emp.currentPositionStartDate).toLocaleDateString() : '—'}</span>
                 </div>
               </div>
             </div>
 
-            {/* Discipline tier display */}
-            <div style={{background:'var(--bg)',borderRadius:'var(--radius)',padding:14,marginBottom:12}}>
+            {/* Teams section */}
+            <div style={{borderTop:'0.5px solid var(--border)',paddingTop:14,marginTop:4}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+                <div style={{fontSize:11,fontWeight:500,color:'var(--text-sec)',textTransform:'uppercase',letterSpacing:'.05em'}}>Teams</div>
+                <button className="btn btn-sm" onClick={() => setShowAddTeam(true)}><i className="ti ti-plus" /> New team</button>
+              </div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                {teams.map(team => {
+                  const on = empTeams.includes(team.id)
+                  return (
+                    <div
+                      key={team.id}
+                      onClick={() => !savingTeams && toggleTeam(team.id)}
+                      style={{
+                        display:'flex',alignItems:'center',gap:6,padding:'6px 12px',
+                        borderRadius:'var(--radius)',cursor:savingTeams?'wait':'pointer',
+                        border:`0.5px solid ${on?'var(--amber)':'var(--border)'}`,
+                        background:on?'var(--amber-lt)':'transparent',
+                        fontSize:13,fontWeight:on?500:400,
+                        color:on?'var(--amber-txt)':'var(--text-sec)',
+                        transition:'all .1s',
+                      }}
+                    >
+                      <div style={{
+                        width:14,height:14,borderRadius:3,flexShrink:0,
+                        border:`1.5px solid ${on?'var(--amber)':'var(--border)'}`,
+                        background:on?'var(--amber)':'transparent',
+                        display:'flex',alignItems:'center',justifyContent:'center',
+                      }}>
+                        {on && <i className="ti ti-check" style={{fontSize:10,color:'#fff'}} />}
+                      </div>
+                      {team.name}
+                    </div>
+                  )
+                })}
+                {teams.length === 0 && <span style={{fontSize:12,color:'var(--text-ter)'}}>No teams yet — click "New team" to create one.</span>}
+              </div>
+            </div>
+
+            {/* Discipline status */}
+            <div style={{background:'var(--bg)',borderRadius:'var(--radius)',padding:14,marginTop:14,marginBottom:12}}>
               <div style={{fontSize:11,fontWeight:500,color:'var(--text-sec)',textTransform:'uppercase',letterSpacing:'.05em',marginBottom:10}}>Discipline status</div>
               <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
                 {[
                   {label:'System calculates',value:emp.disciplineLevel||'good_standing'},
-                  {label:'System recommends',value:emp.disciplineLevel||'good_standing'},
                   {label:'Leadership decision',value:level,highlight:true},
                 ].map((t,i) => (
                   <div key={i} style={{flex:1,border:`0.5px solid ${t.highlight?'var(--amber)':'var(--border)'}`,borderRadius:'var(--radius)',padding:10,background:t.highlight?'var(--amber-lt)':'var(--surface)',textAlign:'center'}}>
@@ -148,12 +198,8 @@ export default function EmployeeDetail() {
                   </div>
                 ))}
               </div>
-              {emp.leadershipStatusNote && (
-                <div style={{fontSize:12,color:'var(--text-sec)',marginTop:8,fontStyle:'italic'}}>Note: {emp.leadershipStatusNote}</div>
-              )}
             </div>
 
-            {/* Stats */}
             <div className="metric-grid metric-grid-4">
               <div className="metric"><div className="metric-label">Flags pending</div><div className="metric-value" style={{color:docFlags.length?'var(--red)':'inherit'}}>{docFlags.length}</div></div>
               <div className="metric"><div className="metric-label">Documentation</div><div className="metric-value">{docs.length}</div></div>
@@ -166,14 +212,10 @@ export default function EmployeeDetail() {
         {docFlags.length > 0 && (
           <div className="danger-box">
             <i className="ti ti-alert-triangle" aria-hidden="true" />
-            <div>
-              <strong>{docFlags.length} attendance flag{docFlags.length>1?'s':''}</strong> pending review.
-              <Link to="/flags" style={{color:'var(--red-txt)',marginLeft:8}}>Review now →</Link>
-            </div>
+            <div><strong>{docFlags.length} attendance flag{docFlags.length>1?'s':''}</strong> pending. <Link to="/flags" style={{color:'var(--red-txt)'}}>Review now →</Link></div>
           </div>
         )}
 
-        {/* Tabs */}
         <div className="tab-row" style={{marginBottom:0}}>
           {[['overview','Overview'],['attendance','Attendance'],['documents','Documentation'],['training','Training'],['ratings','Ratings']].map(([v,l]) => (
             <div key={v} className={`tab${tab===v?' active':''}`} onClick={() => setTab(v)}>{l}</div>
@@ -181,57 +223,50 @@ export default function EmployeeDetail() {
         </div>
 
         <div style={{marginTop:16}}>
-          {/* OVERVIEW TAB */}
           {tab === 'overview' && (
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
               <div className="card">
-                <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
-                  <span className="card-title" style={{marginBottom:0}}><i className="ti ti-timeline" /> Recent timeline</span>
-                </div>
+                <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}><span className="card-title" style={{marginBottom:0}}>Recent timeline</span></div>
                 <div style={{padding:'12px 16px'}}>
                   {[...docs, ...flags.filter(f=>f.status==='documented')]
-                    .sort((a,b) => new Date(b.createdAt?.seconds*1000||b.date) - new Date(a.createdAt?.seconds*1000||a.date))
+                    .sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0))
                     .slice(0,6)
-                    .map((item,i) => (
+                    .map((item,i)=>(
                       <div key={i} style={{display:'flex',gap:10,paddingBottom:12,borderBottom:'0.5px solid var(--border)',marginBottom:12}}>
                         <div style={{width:8,height:8,borderRadius:'50%',background:item.docType?'var(--red)':'var(--amber)',flexShrink:0,marginTop:5}} />
                         <div>
                           <div style={{fontSize:13,fontWeight:500}}>{item.docType||TYPE_LABEL[item.type]||item.type}</div>
-                          <div style={{fontSize:12,color:'var(--text-sec)'}}>{item.date || new Date((item.createdAt?.seconds||0)*1000).toLocaleDateString()}</div>
+                          <div style={{fontSize:12,color:'var(--text-sec)'}}>{item.date||new Date((item.createdAt?.seconds||0)*1000).toLocaleDateString()}</div>
                         </div>
                       </div>
                     ))}
-                  {docs.length === 0 && flags.length === 0 && <div style={{color:'var(--text-ter)',fontSize:13}}>No history yet.</div>}
+                  {docs.length===0&&flags.length===0&&<div style={{color:'var(--text-ter)',fontSize:13}}>No history yet.</div>}
                 </div>
               </div>
-
               <div className="card">
-                <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
-                  <span className="card-title" style={{marginBottom:0}}><i className="ti ti-calendar-check" /> Open follow-ups</span>
-                </div>
+                <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}><span className="card-title" style={{marginBottom:0}}>Open follow-ups</span></div>
                 <div style={{padding:'12px 16px'}}>
-                  {followups.filter(f=>f.status==='open').map(f => (
+                  {followups.filter(f=>f.status==='open').map(f=>(
                     <div key={f.id} style={{background:'var(--amber-lt)',borderRadius:'var(--radius)',padding:10,marginBottom:8}}>
                       <div style={{fontSize:13,fontWeight:500}}>{f.title}</div>
                       <div style={{fontSize:12,color:'var(--amber-txt)'}}>Due {new Date(f.dueDate).toLocaleDateString()}</div>
                     </div>
                   ))}
-                  {followups.filter(f=>f.status==='open').length === 0 && <div style={{color:'var(--text-ter)',fontSize:13}}>No open follow-ups.</div>}
+                  {followups.filter(f=>f.status==='open').length===0&&<div style={{color:'var(--text-ter)',fontSize:13}}>No open follow-ups.</div>}
                 </div>
               </div>
             </div>
           )}
 
-          {/* ATTENDANCE TAB */}
           {tab === 'attendance' && (
             <div className="card" style={{padding:0}}>
-              {flags.length === 0 ? (
-                <div className="empty-state"><i className="ti ti-circle-check" style={{color:'var(--green)'}} /><div>No attendance flags found.</div></div>
-              ) : (
+              {flags.length===0?(
+                <div className="empty-state"><i className="ti ti-circle-check" style={{color:'var(--green)'}} /><div>No attendance flags.</div></div>
+              ):(
                 <table className="data-table">
                   <thead><tr><th>Date</th><th>Type</th><th>Detail</th><th>Status</th></tr></thead>
                   <tbody>
-                    {flags.map(f => (
+                    {flags.map(f=>(
                       <tr key={f.id}>
                         <td className="mono">{f.date}</td>
                         <td><span className={`badge ${['noshow','tier2','tier1'].includes(f.type)?'badge-danger':f.type==='early'?'badge-info':'badge-gray'}`}>{TYPE_LABEL[f.type]||f.type}</span></td>
@@ -245,28 +280,24 @@ export default function EmployeeDetail() {
             </div>
           )}
 
-          {/* DOCUMENTS TAB */}
           {tab === 'documents' && (
             <div className="card" style={{padding:0}}>
               <div style={{padding:'10px 16px',borderBottom:'0.5px solid var(--border)',display:'flex',justifyContent:'flex-end'}}>
                 <Link to={`/documentation?empId=${id}`} className="btn btn-primary btn-sm"><i className="ti ti-plus" /> New documentation</Link>
               </div>
-              {docs.length === 0 ? (
+              {docs.length===0?(
                 <div className="empty-state"><i className="ti ti-file-text" /><div>No documentation yet.</div></div>
-              ) : (
+              ):(
                 <table className="data-table">
-                  <thead><tr><th>Doc ID</th><th>Type</th><th>Date</th><th>Counts toward discipline</th><th>Signature</th><th></th></tr></thead>
+                  <thead><tr><th>Doc ID</th><th>Type</th><th>Date</th><th>Counts</th><th>Signature</th></tr></thead>
                   <tbody>
-                    {docs.map(d => (
+                    {docs.map(d=>(
                       <tr key={d.id}>
                         <td className="mono">{d.docId}</td>
                         <td><span className={`badge ${d.docType==='final_warning'?'badge-danger':d.docType==='written_warning'?'badge-warn':'badge-info'}`}>{d.docType?.replace(/_/g,' ')}</span></td>
-                        <td className="mono">{d.date || new Date((d.createdAt?.seconds||0)*1000).toLocaleDateString()}</td>
-                        <td>{d.countsTowardDiscipline ? <span className="badge badge-warn">Yes</span> : <span className="badge badge-gray">No</span>}</td>
+                        <td className="mono">{d.date||new Date((d.createdAt?.seconds||0)*1000).toLocaleDateString()}</td>
+                        <td>{d.countsTowardDiscipline?<span className="badge badge-warn">Yes</span>:<span className="badge badge-gray">No</span>}</td>
                         <td><span className={`badge ${d.signatureStatus==='signed'?'badge-ok':d.signatureStatus==='refused'?'badge-danger':'badge-gray'}`}>{d.signatureStatus||'pending'}</span></td>
-                        <td>
-                          {d.pdfUrl && <a href={d.pdfUrl} target="_blank" rel="noopener noreferrer" className="btn btn-sm"><i className="ti ti-download" /> PDF</a>}
-                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -275,135 +306,71 @@ export default function EmployeeDetail() {
             </div>
           )}
 
-          {/* TRAINING TAB */}
           {tab === 'training' && (() => {
-            const completedSet = new Set(training.filter(t => t.completed).map(t => t.positionId))
+            const completedSet = new Set(training.filter(t=>t.completed).map(t=>t.positionId))
             const applicable = applicablePositions(emp, positions)
-            const completedList = applicable.filter(p => completedSet.has(p.id))
-            const neededList = applicable.filter(p => !completedSet.has(p.id))
-            const trainingByPosId = Object.fromEntries(training.map(t => [t.positionId, t]))
-
+            const completedList = applicable.filter(p=>completedSet.has(p.id))
+            const neededList = applicable.filter(p=>!completedSet.has(p.id))
+            const trainingByPosId = Object.fromEntries(training.map(t=>[t.positionId,t]))
             return (
               <div>
                 <div style={{marginBottom:12,display:'flex',justifyContent:'flex-end'}}>
                   <Link to={`/training?empId=${id}`} className="btn btn-primary btn-sm"><i className="ti ti-pencil" /> Update training</Link>
                 </div>
-
                 <div className="metric-grid metric-grid-3" style={{marginBottom:16}}>
-                  <div className="metric"><div className="metric-label">Applicable positions</div><div className="metric-value">{applicable.length}</div></div>
+                  <div className="metric"><div className="metric-label">Applicable</div><div className="metric-value">{applicable.length}</div></div>
                   <div className="metric"><div className="metric-label">Completed</div><div className="metric-value" style={{color:'var(--green)'}}>{completedList.length}</div></div>
-                  <div className="metric"><div className="metric-label">Still needed</div><div className="metric-value" style={{color:neededList.length?'var(--amber-txt)':'inherit'}}>{neededList.length}</div></div>
+                  <div className="metric"><div className="metric-label">Needed</div><div className="metric-value" style={{color:neededList.length?'var(--amber-txt)':'inherit'}}>{neededList.length}</div></div>
                 </div>
-
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
                   <div className="card" style={{padding:0}}>
-                    <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
-                      <span className="card-title" style={{marginBottom:0,color:'var(--green-txt)'}}><i className="ti ti-circle-check" /> Training completed</span>
-                    </div>
-                    {completedList.length === 0 ? (
-                      <div className="empty-state" style={{padding:24}}><i className="ti ti-school" /><div>No completed training yet.</div></div>
-                    ) : (
-                      completedList.map(pos => {
-                        const t = trainingByPosId[pos.id]
-                        return (
-                          <div key={pos.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
-                            <i className="ti ti-check" style={{color:'var(--green)'}} aria-hidden="true" />
-                            <div style={{flex:1}}>
-                              <div style={{fontSize:13,fontWeight:500}}>{pos.name}</div>
-                            </div>
-                            <span className="mono">{t?.completedDate ? new Date(t.completedDate).toLocaleDateString() : '—'}</span>
-                          </div>
-                        )
+                    <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}><span className="card-title" style={{marginBottom:0,color:'var(--green-txt)'}}>Training completed</span></div>
+                    {completedList.length===0?<div className="empty-state" style={{padding:24}}><i className="ti ti-school" /><div>None yet.</div></div>:
+                      completedList.map(pos=>{
+                        const t=trainingByPosId[pos.id]
+                        return <div key={pos.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                          <i className="ti ti-check" style={{color:'var(--green)'}} />
+                          <div style={{flex:1,fontSize:13,fontWeight:500}}>{pos.name}</div>
+                          <span className="mono">{t?.completedDate?new Date(t.completedDate).toLocaleDateString():'—'}</span>
+                        </div>
                       })
-                    )}
+                    }
                   </div>
-
                   <div className="card" style={{padding:0}}>
-                    <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
-                      <span className="card-title" style={{marginBottom:0,color:'var(--amber-txt)'}}><i className="ti ti-list-check" /> Training needed</span>
-                    </div>
-                    {neededList.length === 0 ? (
-                      <div className="empty-state" style={{padding:24}}><i className="ti ti-circle-check" style={{color:'var(--green)'}} /><div>Fully trained on all applicable positions.</div></div>
-                    ) : (
-                      neededList.map(pos => (
+                    <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}><span className="card-title" style={{marginBottom:0,color:'var(--amber-txt)'}}>Training needed</span></div>
+                    {neededList.length===0?<div className="empty-state" style={{padding:24}}><i className="ti ti-circle-check" style={{color:'var(--green)'}} /><div>Fully trained.</div></div>:
+                      neededList.map(pos=>(
                         <div key={pos.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
-                          <i className="ti ti-circle-dashed" style={{color:'var(--text-ter)'}} aria-hidden="true" />
-                          <div style={{flex:1}}>
-                            <div style={{fontSize:13,fontWeight:500}}>{pos.name}</div>
-                          </div>
-                          <Link to={`/training?empId=${id}`} className="btn btn-sm">Mark complete</Link>
+                          <i className="ti ti-circle-dashed" style={{color:'var(--text-ter)'}} />
+                          <div style={{flex:1,fontSize:13,fontWeight:500}}>{pos.name}</div>
+                          <Link to={`/training?empId=${id}`} className="btn btn-sm">Train</Link>
                         </div>
                       ))
-                    )}
+                    }
                   </div>
                 </div>
-
-                {Object.keys(ratingsByPos).length > 0 && (
-                  <div style={{marginTop:16}}>
-                    <div style={{fontSize:11,fontWeight:500,color:'var(--text-sec)',textTransform:'uppercase',letterSpacing:'.05em',marginBottom:8}}>Performance ratings (optional, separate from completion)</div>
-                    <div className="pos-grid">
-                      {Object.entries(ratingsByPos).map(([posId, rs]) => {
-                        const latest = rs[0]
-                        const ravg = ((latest.getsItDone + latest.doesItRight + latest.doesItEfficiently) / 3).toFixed(1)
-                        const sc = scoreClass(parseFloat(ravg))
-                        return (
-                          <div key={posId} className="pos-card certified">
-                            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
-                              <div style={{fontSize:13,fontWeight:500}}>{latest.positionName}</div>
-                              <span className="badge badge-ok">Rated</span>
-                            </div>
-                            {[['Gets it done',latest.getsItDone],['Does it right',latest.doesItRight],['Does it efficiently',latest.doesItEfficiently]].map(([l,v]) => (
-                              <div key={l} className="rating-row">
-                                <div className="rating-label" style={{fontSize:11}}>{l}</div>
-                                <div className="rating-track"><div className="rating-fill" style={{width:`${v*10}%`,background:ratingColor(v)}} /></div>
-                                <div className="rating-val">{v}</div>
-                              </div>
-                            ))}
-                            <div style={{display:'flex',alignItems:'center',gap:8,marginTop:10,paddingTop:10,borderTop:'0.5px solid var(--border)'}}>
-                              <div className="score-circle score-circle-sm" style={{...sc}}>
-                                <div className="score-num" style={{fontSize:14}}>{ravg}</div>
-                              </div>
-                              <div style={{fontSize:12,color:'var(--text-sec)'}}>Overall avg</div>
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
               </div>
             )
           })()}
 
-          {/* RATINGS TAB */}
           {tab === 'ratings' && (
             <div className="card" style={{padding:0}}>
               <div style={{padding:'10px 16px',borderBottom:'0.5px solid var(--border)',display:'flex',justifyContent:'flex-end'}}>
                 <Link to={`/ratings?empId=${id}`} className="btn btn-primary btn-sm"><i className="ti ti-plus" /> Add rating</Link>
               </div>
-              {ratings.length === 0 ? (
-                <div className="empty-state"><i className="ti ti-star" /><div>No ratings yet.</div></div>
-              ) : (
+              {ratings.length===0?<div className="empty-state"><i className="ti ti-star" /><div>No ratings yet.</div></div>:(
                 <table className="data-table">
                   <thead><tr><th>Position</th><th>Gets it done</th><th>Does it right</th><th>Does it efficiently</th><th>Average</th><th>Date</th></tr></thead>
                   <tbody>
-                    {ratings.map(r => {
-                      const avg = ((r.getsItDone + r.doesItRight + r.doesItEfficiently) / 3).toFixed(1)
-                      const sc = scoreClass(parseFloat(avg))
-                      return (
-                        <tr key={r.id}>
-                          <td style={{fontWeight:500}}>{r.positionName}</td>
-                          <td>{r.getsItDone}/10</td>
-                          <td>{r.doesItRight}/10</td>
-                          <td>{r.doesItEfficiently}/10</td>
-                          <td>
-                            <div className="score-circle score-circle-sm" style={{...sc,display:'inline-flex'}}>
-                              <div className="score-num" style={{fontSize:13}}>{avg}</div>
-                            </div>
-                          </td>
-                          <td className="mono">{r.ratedAt ? new Date(r.ratedAt.seconds*1000).toLocaleDateString() : '—'}</td>
-                        </tr>
-                      )
+                    {ratings.map(r=>{
+                      const avg=((r.getsItDone+r.doesItRight+r.doesItEfficiently)/3).toFixed(1)
+                      const sc=scoreClass(parseFloat(avg))
+                      return <tr key={r.id}>
+                        <td style={{fontWeight:500}}>{r.positionName}</td>
+                        <td>{r.getsItDone}/10</td><td>{r.doesItRight}/10</td><td>{r.doesItEfficiently}/10</td>
+                        <td><div className="score-circle score-circle-sm" style={{...sc,display:'inline-flex'}}><div className="score-num" style={{fontSize:13}}>{avg}</div></div></td>
+                        <td className="mono">{r.ratedAt?new Date(r.ratedAt.seconds*1000).toLocaleDateString():'—'}</td>
+                      </tr>
                     })}
                   </tbody>
                 </table>
@@ -415,59 +382,59 @@ export default function EmployeeDetail() {
 
       {/* Edit profile modal */}
       {showEdit && (
-        <div className="modal-overlay" onClick={e => e.target===e.currentTarget && setShowEdit(false)}>
+        <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&setShowEdit(false)}>
           <div className="modal" style={{width:460}}>
             <div className="modal-header">
               <div className="modal-header-title">Edit profile</div>
-              <button className="btn btn-sm" onClick={() => setShowEdit(false)}><i className="ti ti-x" /></button>
+              <button className="btn btn-sm" onClick={()=>setShowEdit(false)}><i className="ti ti-x" /></button>
             </div>
             <div className="modal-body">
-              <div className="form-group">
-                <label className="form-label">Initial start date</label>
-                <input type="date" value={eInitialStart} onChange={e => setEInitialStart(e.target.value)} />
-              </div>
-              <div className="form-group">
-                <label className="form-label">Current position</label>
-                <select value={eCurrentPos} onChange={e => setECurrentPos(e.target.value)}>
-                  <option value="Team Member">Team Member</option>
-                  {positions.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
-                  <option value="Team Leader">Team Leader</option>
-                  <option value="Shift Lead">Shift Lead</option>
-                  <option value="Kitchen Lead">Kitchen Lead</option>
-                  <option value="Manager">Manager</option>
+              <div className="form-group"><label className="form-label">Initial start date</label><input type="date" value={eInitialStart} onChange={e=>setEInitialStart(e.target.value)} /></div>
+              <div className="form-group"><label className="form-label">Current position</label>
+                <select value={eCurrentPos} onChange={e=>setECurrentPos(e.target.value)}>
+                  <option>Team Member</option>
+                  {positions.map(p=><option key={p.id} value={p.name}>{p.name}</option>)}
+                  <option>Team Leader</option><option>Shift Lead</option><option>Kitchen Lead</option><option>Manager</option>
                 </select>
               </div>
-              <div className="form-group">
-                <label className="form-label">Current position start date</label>
-                <input type="date" value={eCurrentPosStart} onChange={e => setECurrentPosStart(e.target.value)} />
-              </div>
+              <div className="form-group"><label className="form-label">Current position start date</label><input type="date" value={eCurrentPosStart} onChange={e=>setECurrentPosStart(e.target.value)} /></div>
               <div className="divider" />
-              <div className="form-group">
-                <label className="form-label">Work area</label>
+              <div className="form-group"><label className="form-label">Work area</label>
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
-                  {[['foh','FOH'],['boh','BOH'],['both','Both']].map(([v,l]) => (
-                    <div key={v} onClick={() => setEArea(v)} style={{
-                      border:`0.5px solid ${eArea===v?'var(--amber)':'var(--border)'}`,
-                      borderRadius:'var(--radius)',padding:'8px',textAlign:'center',cursor:'pointer',
-                      background:eArea===v?'var(--amber-lt)':'transparent',fontSize:13,fontWeight:500,
-                    }}>{l}</div>
+                  {[['foh','FOH'],['boh','BOH'],['both','Both']].map(([v,l])=>(
+                    <div key={v} onClick={()=>setEArea(v)} style={{border:`0.5px solid ${eArea===v?'var(--amber)':'var(--border)'}`,borderRadius:'var(--radius)',padding:'8px',textAlign:'center',cursor:'pointer',background:eArea===v?'var(--amber-lt)':'transparent',fontSize:13,fontWeight:500}}>{l}</div>
                   ))}
                 </div>
-                <div style={{fontSize:11,color:'var(--text-ter)',marginTop:4}}>Determines which positions appear in their training and rating checklist.</div>
               </div>
               <div className="form-group">
                 <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
-                  <input type="checkbox" checked={eLeadership} onChange={e => setELeadership(e.target.checked)} style={{width:'auto'}} />
+                  <input type="checkbox" checked={eLeadership} onChange={e=>setELeadership(e.target.checked)} style={{width:'auto'}} />
                   <span style={{fontSize:13}}>On leadership track</span>
                 </label>
-                <div style={{fontSize:11,color:'var(--text-ter)',marginTop:4}}>Adds leadership positions to their training/rating checklist, on top of their FOH/BOH area.</div>
               </div>
             </div>
             <div className="modal-footer">
-              <button className="btn" onClick={() => setShowEdit(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={saveEdit} disabled={saving}>
-                <i className="ti ti-device-floppy" /> {saving ? 'Saving…' : 'Save changes'}
-              </button>
+              <button className="btn" onClick={()=>setShowEdit(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={saveEdit} disabled={saving}><i className="ti ti-device-floppy" /> {saving?'Saving…':'Save changes'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add team modal */}
+      {showAddTeam && (
+        <div className="modal-overlay" onClick={e=>e.target===e.currentTarget&&setShowAddTeam(false)}>
+          <div className="modal" style={{width:380}}>
+            <div className="modal-header">
+              <div className="modal-header-title">Add team</div>
+              <button className="btn btn-sm" onClick={()=>setShowAddTeam(false)}><i className="ti ti-x" /></button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group"><label className="form-label">Team name</label><input type="text" value={newTeamName} onChange={e=>setNewTeamName(e.target.value)} placeholder="e.g. Morning Crew, Drive-Thru Team…" autoFocus /></div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn" onClick={()=>setShowAddTeam(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleAddTeam} disabled={addingTeam||!newTeamName.trim()}><i className="ti ti-plus" /> {addingTeam?'Adding…':'Add team'}</button>
             </div>
           </div>
         </div>
