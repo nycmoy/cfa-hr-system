@@ -279,9 +279,16 @@ export function pdfSegmentsToShifts(segments) {
   return segments.map(s => ({
     workday: s.workday,
     workdayStr: s.date,
-    startVar: s.ciVar ?? 0,
-    endVar: s.coVar ?? 0,
-    schedStart: '', schedEnd: '', workStart: '', workEnd: '',
+    // For a confirmed no-show, zero out startVar/endVar entirely so the
+    // rule engine doesn't ALSO generate a "X min late" and "left Y min
+    // early" flag on top of the no-show — the variance values represent
+    // the missed shift duration, not an actual late arrival or early
+    // departure. Without this, a 4-hour no-show with ci=-240 co=-240
+    // would produce three flags: a no-show, a 240-min late, and a
+    // 240-min early departure, all for the same single missed shift.
+    startVar: s.isNoShow ? 0 : (s.ciVar ?? 0),
+    endVar: s.isNoShow ? 0 : (s.coVar ?? 0),
+    schedStart: s.schedStart || '', schedEnd: '', workStart: s.workStart || '', workEnd: '',
     totalVar: 0,
     windowIdx: getWindowIndex(s.workday),
     windowLabel: windowLabel(getWindowIndex(s.workday)),
