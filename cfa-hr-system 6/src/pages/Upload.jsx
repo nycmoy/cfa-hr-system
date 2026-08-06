@@ -1,0 +1,307 @@
+import { useState, useRef, useCallback } from 'react'
+import Papa from 'papaparse'
+import { parseCSVRow, analyzeEmployee, parsePunchVariancePDFFromWords, pdfSegmentsToShifts } from '../lib/attendanceEngine'
+import { extractPdfWords } from '../lib/pdfTextExtractor'
+import { upsertEmployee, saveAttendanceFlags, recordUpload } from '../lib/db'
+import { Link } from 'react-router-dom'
+
+const RULES = [
+  ['#E89A1A', '5–9 min late', '2+ in any 2-week payroll period (anchored Jun 7) = 1 documentation'],
+  ['#C13333', '10+ min late', 'Each instance = its own documentation'],
+  ['#791F1F', 'No-show', 'PDF: detected directly from matching missed-shift variance. CSV: 120+ min late used as a proxy.'],
+  ['#185FA5', '30+ min early departure', 'Flagged for manager review'],
+  ['#888780', '5+ hrs over schedule', 'Flagged for possible missed punch'],
+]
+
+export default function Upload() {
+  const [stage, setStage] = useState('idle') // idle | processing | done | error
+  const [drag, setDrag] = useState(false)
+  const [progress, setProgress] = useState({ step: '', pct: 0 })
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState('')
+  const fileRef = useRef()
+
+  const processFile = useCallback(async (file) => {
+    setStage('processing')
+    setError('')
+
+    try {
+      const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf'
+      let byEmployee = {}
+      let totalRows = 0
+      let allDates = []
+
+      if (isPdf) {
+        setProgress({ step: 'Reading PDF…', pct: 8 })
+        // Extract words WITH their x/y position preserved — this report's
+        // columns can't be reliably told apart by token order in flattened
+        // text (a clock-out-only line and a clock-in-only line can look
+        // identical in plain text). Position on the page is the only
+        // reliable signal for which column a variance value belongs to.
+        const pages = await extractPdfWords(file)
+
+        setProgress({ step: 'Parsing punch report…', pct: 22 })
+        const parsedEmployees = parsePunchVariancePDFFromWords(pages)
+        const empNamesFound = Object.keys(parsedEmployees)
+        if (empNamesFound.length === 0) {
+          throw new Error('No employees found. This PDF may not match the expected Actual vs. Scheduled Punch Variance Report format.')
+        }
+
+        for (const [name, segments] of Object.entries(parsedEmployees)) {
+          byEmployee[name] = pdfSegmentsToShifts(segments)
+          totalRows += segments.length
+          for (const seg of segments) if (seg.workday) allDates.push(seg.workday)
+        }
+      } else {
+        // CSV path (unchanged)
+        setProgress({ step: 'Parsing CSV…', pct: 10 })
+        const text = await file.text()
+        const parsed = await new Promise((res, rej) =>
+          Papa.parse(text, { header: true, skipEmptyLines: true, complete: res, error: rej })
+        )
+
+        const rows = parsed.data
+        if (!rows.length) throw new Error('No data rows found in file.')
+        if (!rows[0].FULL_NAME) throw new Error('File does not appear to be a punch variance export. Expected column: FULL_NAME.')
+
+        setProgress({ step: 'Grouping shifts by employee…', pct: 25 })
+        for (const row of rows) {
+          const shift = parseCSVRow(row)
+          if (!shift.name) continue
+          if (!byEmployee[shift.name]) byEmployee[shift.name] = []
+          byEmployee[shift.name].push(shift)
+          if (shift.workday) allDates.push(shift.workday)
+        }
+        totalRows = rows.length
+      }
+
+      const empNames = Object.keys(byEmployee)
+      setProgress({ step: `Analyzing ${empNames.length} employees…`, pct: 40 })
+
+      let totalDocs = 0, totalNoshow = 0, totalTier2 = 0, totalTier1 = 0
+      let totalEarly = 0, totalOverage = 0, affectedCount = 0
+      let totalWritten = 0, totalSkippedDupes = 0
+      const summaries = []
+
+      for (let i = 0; i < empNames.length; i++) {
+        const name = empNames[i]
+        const shifts = byEmployee[name]
+        const analysis = analyzeEmployee(shifts)
+
+        setProgress({
+          step: `Processing ${name}…`,
+          pct: Math.round(40 + (i / empNames.length) * 40),
+        })
+
+        // Upsert employee
+        const empId = await upsertEmployee(name, { totalShifts: shifts.length })
+
+        // Save only flags that should be stored (excludes tier1-info which is
+        // below threshold). saveAttendanceFlags checks for duplicates against
+        // what's already on file and skips anything that matches.
+        if (analysis.flagsToSave?.length) {
+          const { written, skipped } = await saveAttendanceFlags(empId, analysis.flagsToSave)
+          totalWritten += written
+          totalSkippedDupes += skipped
+        }
+
+        totalDocs += analysis.docCount
+        totalNoshow += analysis.noshow.length
+        totalTier2 += analysis.tier2.length
+        totalTier1 += analysis.tier1Docs.length
+        totalEarly += analysis.early.length
+        totalOverage += analysis.overage.length
+        if (analysis.docCount > 0) affectedCount++
+
+        summaries.push({
+          name,
+          empId,
+          docCount: analysis.docCount,
+          noshow: analysis.noshow.length,
+          tier2: analysis.tier2.length,
+          tier1: analysis.tier1Docs.length,
+          early: analysis.early.length,
+        })
+      }
+
+      setProgress({ step: 'Recording upload…', pct: 90 })
+
+      // Detect date range (works for both CSV and PDF — allDates was
+      // populated by whichever path ran above)
+      const validDates = allDates.filter(d => d instanceof Date && !isNaN(d))
+      const dateRange = validDates.length
+        ? `${new Date(Math.min(...validDates)).toLocaleDateString('en-US')} – ${new Date(Math.max(...validDates)).toLocaleDateString('en-US')}`
+        : 'Unknown range'
+
+      await recordUpload({
+        fileName: file.name,
+        fileType: isPdf ? 'pdf' : 'csv',
+        dateRange,
+        empCount: empNames.length,
+        shiftCount: totalRows,
+        totalDocs,
+        affectedCount,
+      })
+
+      setProgress({ step: 'Done!', pct: 100 })
+      setResult({
+        fileName: file.name,
+        fileType: isPdf ? 'pdf' : 'csv',
+        dateRange,
+        empCount: empNames.length,
+        shiftCount: totalRows,
+        totalDocs,
+        totalNoshow,
+        totalTier2,
+        totalTier1,
+        totalEarly,
+        totalOverage,
+        affectedCount,
+        totalWritten,
+        totalSkippedDupes,
+        top: summaries.sort((a, b) => b.docCount - a.docCount).slice(0, 8),
+      })
+      setStage('done')
+    } catch (err) {
+      console.error(err)
+      setError(err.message || 'Unknown error')
+      setStage('error')
+    }
+  }, [])
+
+  const handleDrop = useCallback(e => {
+    e.preventDefault()
+    setDrag(false)
+    const f = e.dataTransfer.files[0]
+    if (f) processFile(f)
+  }, [processFile])
+
+  return (
+    <>
+      <div className="topbar">
+        <span className="topbar-title">Upload time report</span>
+      </div>
+      <div className="content">
+        {stage === 'idle' && (
+          <>
+            <div className="card">
+              <div className="card-body">
+                <div className="card-title"><i className="ti ti-ruler-2" aria-hidden="true" /> Rules active for this upload</div>
+                {RULES.map(([dot, title, sub]) => (
+                  <div key={title} style={{display:'flex',gap:12,alignItems:'flex-start',padding:'8px 0',borderBottom:'0.5px solid var(--border)'}}>
+                    <div style={{width:8,height:8,borderRadius:'50%',background:dot,flexShrink:0,marginTop:5}} />
+                    <div>
+                      <div style={{fontSize:13,fontWeight:500}}>{title}</div>
+                      <div style={{fontSize:12,color:'var(--text-sec)',marginTop:1}}>{sub}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div
+              className={`upload-zone${drag?' drag':''}`}
+              onClick={() => fileRef.current?.click()}
+              onDragOver={e => { e.preventDefault(); setDrag(true) }}
+              onDragLeave={() => setDrag(false)}
+              onDrop={handleDrop}
+            >
+              <i className="ti ti-file-spreadsheet" style={{fontSize:36,color:'var(--text-ter)',display:'block',marginBottom:12}} aria-hidden="true" />
+              <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Drop your punch variance report here</div>
+              <div style={{fontSize:12,color:'var(--text-sec)',marginBottom:16}}>
+                Accepts either format: <strong>CSV export</strong> (columns: FULL_NAME, WORKDAY, SCHED_START, SCHED_END, WORK_START, WORK_END, START_VARIANCE, END_VARIANCE) or the <strong>PDF "Actual vs. Scheduled Punch Variance Report"</strong>. Use the PDF when you need true no-show detection — the CSV export doesn't preserve that signal.
+              </div>
+              <button className="btn btn-primary"><i className="ti ti-upload" aria-hidden="true" /> Choose file</button>
+              <input ref={fileRef} type="file" accept=".csv,.txt,.pdf" style={{display:'none'}} onChange={e => processFile(e.target.files[0])} />
+            </div>
+          </>
+        )}
+
+        {stage === 'processing' && (
+          <div className="card">
+            <div className="card-body" style={{textAlign:'center',padding:48}}>
+              <i className="ti ti-loader" style={{fontSize:36,color:'var(--text-ter)',display:'block',marginBottom:12}} aria-hidden="true" />
+              <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>{progress.step}</div>
+              <div style={{background:'var(--bg)',borderRadius:4,height:6,overflow:'hidden',maxWidth:320,margin:'0 auto'}}>
+                <div style={{height:'100%',background:'var(--amber)',borderRadius:4,width:`${progress.pct}%`,transition:'width .3s'}} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {stage === 'error' && (
+          <div className="danger-box" style={{padding:16}}>
+            <i className="ti ti-alert-triangle" aria-hidden="true" />
+            <div>
+              <div style={{fontWeight:500,marginBottom:4}}>Upload failed</div>
+              <div>{error}</div>
+              <button className="btn btn-sm" style={{marginTop:8}} onClick={() => setStage('idle')}>Try again</button>
+            </div>
+          </div>
+        )}
+
+        {stage === 'done' && result && (
+          <>
+            <div className="card" style={{borderLeft:'3px solid var(--green)'}}>
+              <div className="card-body">
+                <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:16}}>
+                  <div style={{width:36,height:36,borderRadius:'50%',background:'var(--green-lt)',display:'flex',alignItems:'center',justifyContent:'center',color:'var(--green)'}}>
+                    <i className="ti ti-check" style={{fontSize:18}} aria-hidden="true" />
+                  </div>
+                  <div>
+                    <div style={{fontSize:14,fontWeight:500,display:'flex',alignItems:'center',gap:8}}>
+                      Report processed — {result.dateRange}
+                      <span className={`badge ${result.fileType==='pdf'?'badge-warn':'badge-info'}`}>{result.fileType?.toUpperCase()}</span>
+                    </div>
+                    <div style={{fontSize:12,color:'var(--text-sec)'}}>{result.empCount} employees · {result.shiftCount.toLocaleString()} shifts</div>
+                  </div>
+                </div>
+                <div className="metric-grid metric-grid-5" style={{marginBottom:12}}>
+                  <div className="metric"><div className="metric-label">Docs needed</div><div className="metric-value" style={{color:'var(--red)'}}>{result.totalDocs}</div></div>
+                  <div className="metric"><div className="metric-label">No-shows</div><div className="metric-value" style={{color:'#791F1F'}}>{result.totalNoshow}</div></div>
+                  <div className="metric"><div className="metric-label">Tier 2 lates</div><div className="metric-value" style={{color:'var(--red)'}}>{result.totalTier2}</div></div>
+                  <div className="metric"><div className="metric-label">Tier 1 patterns</div><div className="metric-value" style={{color:'var(--amber-txt)'}}>{result.totalTier1}</div></div>
+                  <div className="metric"><div className="metric-label">Early departures</div><div className="metric-value" style={{color:'var(--blue)'}}>{result.totalEarly}</div></div>
+                </div>
+                {result.totalSkippedDupes > 0 && (
+                  <div className="info-box" style={{marginBottom:16}}>
+                    <i className="ti ti-shield-check" aria-hidden="true" />
+                    <div><strong>{result.totalSkippedDupes}</strong> flag{result.totalSkippedDupes!==1?'s':''} already existed from a prior upload and {result.totalSkippedDupes!==1?'were':'was'} skipped — no duplicates created. {result.totalWritten} new flag{result.totalWritten!==1?'s':''} added.</div>
+                  </div>
+                )}
+                <div style={{display:'flex',gap:8}}>
+                  <Link to="/flags" className="btn btn-primary"><i className="ti ti-alert-circle" aria-hidden="true" /> Review flags</Link>
+                  <button className="btn" onClick={() => setStage('idle')}><i className="ti ti-upload" aria-hidden="true" /> Upload another</button>
+                </div>
+              </div>
+            </div>
+
+            {result.top.length > 0 && (
+              <div className="card">
+                <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                  <span className="card-title" style={{marginBottom:0}}><i className="ti ti-podium" aria-hidden="true" /> Top priority — most documentation events</span>
+                </div>
+                <table className="data-table">
+                  <thead><tr><th>Employee</th><th>Total docs</th><th>No-show</th><th>Tier 2</th><th>Tier 1</th><th>Early exits</th><th></th></tr></thead>
+                  <tbody>
+                    {result.top.filter(e => e.docCount > 0).map(e => (
+                      <tr key={e.empId}>
+                        <td style={{fontWeight:500}}>{e.name}</td>
+                        <td><span className="badge badge-danger">{e.docCount}</span></td>
+                        <td>{e.noshow > 0 ? <span className="badge badge-danger">{e.noshow}</span> : '—'}</td>
+                        <td>{e.tier2 > 0 ? <span className="badge badge-warn">{e.tier2}</span> : '—'}</td>
+                        <td>{e.tier1 > 0 ? <span className="badge badge-warn">{e.tier1}</span> : '—'}</td>
+                        <td>{e.early > 0 ? <span className="badge badge-info">{e.early}</span> : '—'}</td>
+                        <td><Link to={`/employees/${e.empId}`} className="btn btn-sm">View</Link></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </>
+  )
+}
