@@ -10,6 +10,7 @@ import EmployeeDetail from './pages/EmployeeDetail'
 import Upload from './pages/Upload'
 import VerifyUpload from './pages/VerifyUpload'
 import Flags from './pages/Flags'
+import FlagReview from './pages/FlagReview'
 import Documentation from './pages/Documentation'
 import Training from './pages/Training'
 import Positions from './pages/Positions'
@@ -38,6 +39,7 @@ function App() {
             <Route path="upload" element={<Upload />} />
             <Route path="verify-upload" element={<VerifyUpload />} />
             <Route path="flags" element={<Flags />} />
+            <Route path="flag-review" element={<FlagReview />} />
             <Route path="documentation" element={<Documentation />} />
             <Route path="training" element={<Training />} />
             <Route path="positions" element={<Positions />} />

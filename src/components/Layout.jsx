@@ -30,6 +30,9 @@ export default function Layout() {
         <NavLink to="/flags" className={({isActive})=>`nav-item${isActive?' active':''}`}>
           <i className="ti ti-alert-circle" aria-hidden="true" /> Flags
         </NavLink>
+        <NavLink to="/flag-review" className={({isActive})=>`nav-item${isActive?' active':''}`}>
+          <i className="ti ti-player-play" aria-hidden="true" /> Review mode
+        </NavLink>
 
         <div className="nav-section">Discipline</div>
         <NavLink to="/documentation" className={({isActive})=>`nav-item${isActive?' active':''}`}>

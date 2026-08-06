@@ -58,13 +58,8 @@ export default function Documentation() {
   useEffect(() => {
     Promise.all([getEmployees()]).then(async ([e]) => {
       setEmployees(e)
-      if (preEmpId) {
-        const found = e.find(x => x.id === preEmpId)
-        if (found) setEmpName(found.name)
-        await loadEmployeeContext(preEmpId, found)
-      }
-      // Pull the actual flag data so we can pre-fill date/scheduled/actual/late-minutes
       if (preEmpId && preFlagId) {
+        // Load the flag first so we have the incident date for the history cutoff
         const flags = await getAttendanceFlags(preEmpId)
         const flag = flags.find(f => f.id === preFlagId)
         if (flag) {
@@ -76,6 +71,15 @@ export default function Documentation() {
           setNotes(flag.detail || '')
           setCorrectiveAction('Team member needs to clock in on time for all scheduled shifts.')
         }
+        const found = e.find(x => x.id === preEmpId)
+        if (found) setEmpName(found.name)
+        // Pass the flag's date as cutoff — no incidents after this date should
+        // appear in prior warnings on a documentation for this specific incident.
+        await loadEmployeeContext(preEmpId, found, flag?.date || null)
+      } else if (preEmpId) {
+        const found = e.find(x => x.id === preEmpId)
+        if (found) setEmpName(found.name)
+        await loadEmployeeContext(preEmpId, found)
       }
       setLoading(false)
     })
@@ -86,12 +90,14 @@ export default function Documentation() {
   // computes everything the form auto-fills: absence/late counts + dates,
   // and the recommended next rung on the discipline ladder. Always editable
   // afterward — this only sets sensible defaults, never locks anything.
-  async function loadEmployeeContext(targetEmpId, employeeRecord) {
+  async function loadEmployeeContext(targetEmpId, employeeRecord, cutoffDate = null) {
     const [flags, empDetail] = await Promise.all([
       getAttendanceFlags(targetEmpId),
       employeeRecord ? Promise.resolve(employeeRecord) : getEmployee(targetEmpId),
     ])
-    const summary = summarizeFlagHistory(flags)
+    // Pass cutoffDate so incidents after the documentation date are excluded.
+    // Falls back to "no cutoff" (all history) when date isn't known yet.
+    const summary = summarizeFlagHistory(flags, cutoffDate)
     setHistorySummary(summary)
 
     const level = empDetail?.leadershipStatus || empDetail?.disciplineLevel || 'good_standing'
@@ -344,7 +350,7 @@ export default function Documentation() {
                     const found = employees.find(x => x.id === newId)
                     setEmpName(found?.name || '')
                     setConsequencesTouched(false)
-                    if (newId) await loadEmployeeContext(newId, found)
+                    if (newId) await loadEmployeeContext(newId, found, incidentDate || null)
                   }}>
                     <option value="">— select —</option>
                     {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}

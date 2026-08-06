@@ -329,6 +329,9 @@ export default function Flags() {
           <button className="btn btn-sm" onClick={openCleanupModal}>
             <i className="ti ti-copy-off" aria-hidden="true" /> Find duplicates
           </button>
+          <Link to="/flag-review" className="btn btn-sm btn-primary">
+            <i className="ti ti-player-play" aria-hidden="true" /> Review mode
+          </Link>
         </div>
       </div>
       <div className="content">

@@ -68,17 +68,35 @@ export function parseCSVRow(row) {
 // "Absence" = no-show flags. "Late" = every individual Tier 2 late, plus
 // every individual date inside a Tier 1 pattern flag (since each Tier 1
 // flag can bundle multiple actual late dates together).
-export function summarizeFlagHistory(flags) {
+// `asOfDate` is optional — when provided (as "MM/DD/YYYY" or a Date), only
+// flags on or before that date are counted. This ensures a documentation
+// created for a 6/1 incident never lists a 6/12 incident in its prior
+// warnings, even if that later flag is already stored in Firestore.
+export function summarizeFlagHistory(flags, asOfDate = null) {
+  const cutoff = asOfDate
+    ? (asOfDate instanceof Date ? asOfDate : new Date(asOfDate))
+    : null
+
   const absences = []
   const lates = []
 
   for (const f of flags) {
+    // Skip flags that are strictly AFTER the cutoff date
+    if (cutoff) {
+      const flagDate = new Date(f.date)
+      if (!isNaN(flagDate) && flagDate > cutoff) continue
+    }
+
     if (f.type === 'noshow') {
       absences.push({ date: f.date, minutes: f.minutes })
     } else if (f.type === 'tier2') {
       lates.push({ date: f.date, minutes: f.minutes })
     } else if (f.type === 'tier1' && Array.isArray(f.lates)) {
       for (const l of f.lates) {
+        if (cutoff) {
+          const ld = new Date(l.date)
+          if (!isNaN(ld) && ld > cutoff) continue
+        }
         lates.push({ date: l.date, minutes: l.minutes })
       }
     }

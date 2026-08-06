@@ -528,12 +528,17 @@ export async function getAllRatings() {
 // Each employee record carries a `teams: []` array of team IDs.
 
 export async function getTeams() {
-  const snap = await getDocs(query(collection(db, 'teams'), orderBy('name')))
-  if (snap.empty) {
-    await seedDefaultTeams()
-    return getTeams()
+  try {
+    const snap = await getDocs(query(collection(db, 'teams'), orderBy('name')))
+    if (snap.empty) {
+      await seedDefaultTeams()
+      const snap2 = await getDocs(query(collection(db, 'teams'), orderBy('name')))
+      return snap2.docs.map(d => ({ id: d.id, ...d.data() }))
+    }
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+  } catch {
+    return []
   }
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }))
 }
 
 async function seedDefaultTeams() {
@@ -590,15 +595,21 @@ export async function getFollowUps(employeeId) {
 }
 
 export async function getAllOpenFollowUps() {
-  const emps = await getEmployees()
-  const all = []
-  for (const emp of emps) {
-    const fus = await getFollowUps(emp.id)
-    fus.filter(f => f.status === 'open').forEach(f =>
-      all.push({ ...f, employeeId: emp.id, employeeName: emp.name })
-    )
+  try {
+    const emps = await getEmployees()
+    const all = []
+    for (const emp of emps) {
+      try {
+        const fus = await getFollowUps(emp.id)
+        fus.filter(f => f.status === 'open').forEach(f =>
+          all.push({ ...f, employeeId: emp.id, employeeName: emp.name })
+        )
+      } catch { /* skip this employee if their subcollection errors */ }
+    }
+    return all.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate))
+  } catch {
+    return []
   }
-  return all.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate))
 }
 
 // ─── UPLOAD HISTORY ───────────────────────────────────────────────────────────
@@ -610,6 +621,10 @@ export async function recordUpload(meta) {
 }
 
 export async function getUploads() {
-  const snap = await getDocs(query(collection(db, 'uploads'), orderBy('uploadedAt', 'desc')))
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+  try {
+    const snap = await getDocs(query(collection(db, 'uploads'), orderBy('uploadedAt', 'desc')))
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+  } catch {
+    return []
+  }
 }
