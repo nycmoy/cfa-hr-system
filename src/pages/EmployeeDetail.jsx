@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { getEmployee, getAttendanceFlags, getDocuments, getRatings, getFollowUps, updateEmployee, getPositions, getTraining, getTeams, updateEmployeeTeams, addTeam } from '../lib/db'
-import { DISCIPLINE_LABEL, DISCIPLINE_BADGE } from '../lib/disciplineLevels'
+import { DISCIPLINE_LABEL, DISCIPLINE_BADGE, computeEffectiveDisciplineLevel } from '../lib/disciplineLevels'
 import { applicablePositions } from '../lib/positionRules'
 
 const LEVEL_LABEL = DISCIPLINE_LABEL
@@ -45,6 +45,22 @@ export default function EmployeeDetail() {
     setEmp(e); setFlags(f); setDocs(d); setRatings(r); setFollowups(fu)
     setPositions(p); setTraining(tr); setTeams(t)
     setEmpTeams(e?.teams || [])
+
+    // Recompute effective discipline level from recent documentation history.
+    // If offenses have rolled off the 4-month window, this will return a
+    // lower level (possibly good_standing) and silently update the stored
+    // field so every page that reads disciplineLevel stays current.
+    const effectiveLevel = computeEffectiveDisciplineLevel(d)
+    const storedLevel = e?.leadershipStatus || e?.disciplineLevel || 'good_standing'
+    if (effectiveLevel !== storedLevel && e?.status === 'active') {
+      await updateEmployee(id, {
+        disciplineLevel: effectiveLevel,
+        leadershipStatus: effectiveLevel,
+      })
+      e.disciplineLevel = effectiveLevel
+      e.leadershipStatus = effectiveLevel
+    }
+
     setLoading(false)
   }
 

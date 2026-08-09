@@ -72,20 +72,32 @@ export function parseCSVRow(row) {
 // flags on or before that date are counted. This ensures a documentation
 // created for a 6/1 incident never lists a 6/12 incident in its prior
 // warnings, even if that later flag is already stored in Firestore.
-export function summarizeFlagHistory(flags, asOfDate = null) {
+//
+// `rolloffMonths` (default 4) — offenses older than this many months from
+// `asOfDate` (or today if no asOfDate) are excluded entirely. A clean
+// 4-month period resets the escalation ladder from that employee's
+// perspective — prior offenses remain on record but no longer count toward
+// recommending the next discipline step.
+export function summarizeFlagHistory(flags, asOfDate = null, rolloffMonths = 4) {
   const cutoff = asOfDate
     ? (asOfDate instanceof Date ? asOfDate : new Date(asOfDate))
-    : null
+    : new Date()
+
+  // Rolloff: offenses before this date don't count toward escalation
+  const rolloffStart = new Date(cutoff)
+  rolloffStart.setMonth(rolloffStart.getMonth() - rolloffMonths)
 
   const absences = []
   const lates = []
 
   for (const f of flags) {
-    // Skip flags that are strictly AFTER the cutoff date
-    if (cutoff) {
-      const flagDate = new Date(f.date)
-      if (!isNaN(flagDate) && flagDate > cutoff) continue
-    }
+    const flagDate = new Date(f.date)
+
+    // Skip flags strictly AFTER the documentation date (future incidents)
+    if (!isNaN(flagDate) && flagDate > cutoff) continue
+
+    // Skip flags that have rolled off (older than 4 months from cutoff)
+    if (!isNaN(flagDate) && flagDate < rolloffStart) continue
 
     if (f.type === 'noshow') {
       absences.push({ date: f.date, minutes: f.minutes })
@@ -93,10 +105,9 @@ export function summarizeFlagHistory(flags, asOfDate = null) {
       lates.push({ date: f.date, minutes: f.minutes })
     } else if (f.type === 'tier1' && Array.isArray(f.lates)) {
       for (const l of f.lates) {
-        if (cutoff) {
-          const ld = new Date(l.date)
-          if (!isNaN(ld) && ld > cutoff) continue
-        }
+        const ld = new Date(l.date)
+        if (!isNaN(ld) && ld > cutoff) continue
+        if (!isNaN(ld) && ld < rolloffStart) continue
         lates.push({ date: l.date, minutes: l.minutes })
       }
     }

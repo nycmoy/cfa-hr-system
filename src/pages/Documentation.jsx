@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { getEmployees, getEmployee, createDocument, getDocuments, updateDocument, getAttendanceFlags, updateFlagStatus } from '../lib/db'
 import { generateWrittenWarning, generateFinalWarning, generateCoachingNote, generateVerbalWarning, generateTerminationNotice } from '../lib/pdfGenerator'
-import { DOC_TYPES, DOC_TYPE_META, DISCIPLINE_LABEL, nextDisciplineStep } from '../lib/disciplineLevels'
+import { DOC_TYPES, DOC_TYPE_META, DISCIPLINE_LABEL, nextDisciplineStep, computeEffectiveDisciplineLevel } from '../lib/disciplineLevels'
 import { summarizeFlagHistory } from '../lib/attendanceEngine'
 
 export default function Documentation() {
@@ -91,25 +91,56 @@ export default function Documentation() {
   // and the recommended next rung on the discipline ladder. Always editable
   // afterward — this only sets sensible defaults, never locks anything.
   async function loadEmployeeContext(targetEmpId, employeeRecord, cutoffDate = null) {
-    const [flags, empDetail] = await Promise.all([
+    const [flags, empDetail, empDocs] = await Promise.all([
       getAttendanceFlags(targetEmpId),
       employeeRecord ? Promise.resolve(employeeRecord) : getEmployee(targetEmpId),
+      getDocuments(targetEmpId),
     ])
-    // Pass cutoffDate so incidents after the documentation date are excluded.
-    // Falls back to "no cutoff" (all history) when date isn't known yet.
+
+    // summarizeFlagHistory applies BOTH the documentation-date cutoff (no
+    // future incidents) AND the 4-month rolling window (offenses older than
+    // 4 months have rolled off and don't count toward escalation).
     const summary = summarizeFlagHistory(flags, cutoffDate)
     setHistorySummary(summary)
 
-    const level = empDetail?.leadershipStatus || empDetail?.disciplineLevel || 'good_standing'
-    setCurrentLevel(level)
-    const suggested = nextDisciplineStep(level)
+    // Compute the effective discipline level from RECENT documentation —
+    // this drops automatically when prior docs roll out of the 4-month window,
+    // so a clean period is genuinely reflected in the recommendation.
+    const computedLevel = computeEffectiveDisciplineLevel(empDocs, cutoffDate || new Date())
+    const storedLevel = empDetail?.leadershipStatus || empDetail?.disciplineLevel || 'good_standing'
+    // Use whichever is higher: the computed (recent docs) level or the stored
+    // level. This prevents a weird edge case where docs loaded async are
+    // slightly stale; the stored level is the minimum floor.
+    const level = computedLevel
+    setCurrentLevel(storedLevel) // show stored for display
+
+    // Determine the effective discipline level from RECENT history only.
+    // If all prior incidents have rolled off (nothing in the last 4 months),
+    // treat the employee as effectively at good standing for escalation
+    // purposes — a new offense gets a verbal warning, not a written warning
+    // or higher just because of something that happened 6 months ago.
+    // The stored level on the record is preserved for history, but the
+    // RECOMMENDATION is always driven by recent activity.
+    const hasRecentActivity = summary.absenceCount > 0 || summary.lateCount > 0
+
+    // `level` is already the computed level from recent docs (auto-rolls off).
+    // If no recent activity in flags either, confirm good standing.
+    const effectiveLevel = (!hasRecentActivity && level === 'good_standing')
+      ? 'good_standing'
+      : level
+
+    const suggested = nextDisciplineStep(effectiveLevel)
     setRecommendedLevel(suggested)
 
-    // Pre-fill prior-warnings fields straight from the actual history —
-    // editable afterward, never locked.
-    if (level !== 'good_standing') {
+    const rolledOff = storedLevel !== 'good_standing' && level === 'good_standing'
+    if (rolledOff) {
+      // Prior level exists on record but is outside the rolling window —
+      // surface this so the manager knows, but don't count it as "active"
+      setPriorWarnings('no')
+      setPriorWarningsDetail(`Note: previous ${DISCIPLINE_LABEL[storedLevel]} on record but outside the 4-month rolling window — offenses have rolled off.`)
+    } else if (storedLevel !== 'good_standing' && hasRecentActivity) {
       setPriorWarnings('yes')
-      setPriorWarningsDetail(`${DISCIPLINE_LABEL[level]} on file. ${summary.combinedSummary}`.trim())
+      setPriorWarningsDetail(`${DISCIPLINE_LABEL[storedLevel]} on file. ${summary.combinedSummary}`.trim())
     } else if (summary.combinedSummary) {
       setPriorWarnings('yes')
       setPriorWarningsDetail(summary.combinedSummary)
