@@ -184,8 +184,10 @@ export default function Documentation() {
     const emps = await getEmployees()
     const all = []
     for (const emp of emps) {
-      const docs = await getDocuments(emp.id)
-      docs.forEach(d => all.push({ ...d, employeeName: emp.name, employeeId: emp.id }))
+      try {
+        const docs = await getDocuments(emp.id)
+        docs.forEach(d => all.push({ ...d, employeeName: emp.name, employeeId: emp.id }))
+      } catch { /* skip this employee if their subcollection errors */ }
     }
     all.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))
     setAllDocs(all)

@@ -393,10 +393,20 @@ export async function createDocument(employeeId, docData) {
 }
 
 export async function getDocuments(employeeId) {
-  const snap = await getDocs(
-    query(collection(db, 'employees', employeeId, 'documents'), orderBy('createdAt', 'desc'))
-  )
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+  try {
+    const snap = await getDocs(
+      query(collection(db, 'employees', employeeId, 'documents'), orderBy('createdAt', 'desc'))
+    )
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+  } catch {
+    // Fall back to unordered fetch if index doesn't exist yet
+    try {
+      const snap = await getDocs(collection(db, 'employees', employeeId, 'documents'))
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+    } catch {
+      return []
+    }
+  }
 }
 
 export async function updateDocument(employeeId, docId, data) {
