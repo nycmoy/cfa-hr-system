@@ -33,6 +33,8 @@ export default function EmployeeDetail() {
   const [eCurrentPosStart, setECurrentPosStart] = useState('')
   const [eArea, setEArea] = useState('both')
   const [eLeadership, setELeadership] = useState(false)
+  const [eEmail, setEEmail] = useState('')
+  const [ePhone, setEPhone] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => { load() }, [id])
@@ -91,6 +93,8 @@ export default function EmployeeDetail() {
     setECurrentPosStart(emp.currentPositionStartDate || '')
     setEArea(emp.area || 'both')
     setELeadership(!!emp.leadershipTrack)
+    setEEmail(emp.email || '')
+    setEPhone(emp.phone || '')
     setShowEdit(true)
   }
 
@@ -101,6 +105,8 @@ export default function EmployeeDetail() {
         initialStartDate: eInitialStart, currentPosition: eCurrentPos,
         currentPositionStartDate: eCurrentPosStart, position: eCurrentPos,
         area: eArea, leadershipTrack: eLeadership,
+        email: eEmail || '',
+        phone: ePhone || '',
       })
       await load()
       setShowEdit(false)
@@ -158,6 +164,12 @@ export default function EmployeeDetail() {
                   <span><i className="ti ti-calendar" aria-hidden="true" /> Hired: {emp.initialStartDate ? new Date(emp.initialStartDate).toLocaleDateString() : '—'}</span>
                   <span><i className="ti ti-calendar-event" aria-hidden="true" /> Current position since: {emp.currentPositionStartDate ? new Date(emp.currentPositionStartDate).toLocaleDateString() : '—'}</span>
                 </div>
+                {(emp.email || emp.phone) && (
+                  <div style={{fontSize:12,color:'var(--text-sec)',display:'flex',gap:16,marginTop:4}}>
+                    {emp.email && <span><i className="ti ti-mail" aria-hidden="true" /> <a href={`mailto:${emp.email}`} style={{color:'var(--text-sec)'}}>{emp.email}</a></span>}
+                    {emp.phone && <span><i className="ti ti-phone" aria-hidden="true" /> <a href={`tel:${emp.phone}`} style={{color:'var(--text-sec)'}}>{emp.phone}</a></span>}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -427,6 +439,17 @@ export default function EmployeeDetail() {
                   <input type="checkbox" checked={eLeadership} onChange={e=>setELeadership(e.target.checked)} style={{width:'auto'}} />
                   <span style={{fontSize:13}}>On leadership track</span>
                 </label>
+              </div>
+              <div className="divider" />
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                <div className="form-group">
+                  <label className="form-label">Email</label>
+                  <input type="email" value={eEmail} onChange={e=>setEEmail(e.target.value)} placeholder="name@email.com" />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Phone</label>
+                  <input type="tel" value={ePhone} onChange={e=>setEPhone(e.target.value)} placeholder="(555) 555-5555" />
+                </div>
               </div>
             </div>
             <div className="modal-footer">
