@@ -30,7 +30,19 @@ export default function Dashboard() {
 
   if (loading) return <div style={{padding:40,textAlign:'center',color:'var(--text-sec)'}}>Loading...</div>
 
+  function getAge(birthdate) {
+    if (!birthdate) return null
+    const today = new Date()
+    const birth = new Date(birthdate)
+    let age = today.getFullYear() - birth.getFullYear()
+    const m = today.getMonth() - birth.getMonth()
+    if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--
+    return age
+  }
+
   const active = employees.filter(e => e.status === 'active')
+  const minors15Under = active.filter(e => { const a = getAge(e.birthdate); return a !== null && a <= 15 })
+  const minors1617 = active.filter(e => { const a = getAge(e.birthdate); return a !== null && a >= 16 && a < 18 })
   const levelOf = e => e.leadershipStatus || e.disciplineLevel || 'good_standing'
   const withDiscipline = active.filter(e => levelOf(e) !== 'good_standing')
   const finalWarningHours = active.filter(e => levelOf(e) === 'final_warning')
@@ -114,6 +126,50 @@ export default function Dashboard() {
             </div>
           )}
         </div>
+
+        {/* Minors section */}
+        {(minors15Under.length > 0 || minors1617.length > 0) && (
+          <div style={{display:'grid',gridTemplateColumns:minors15Under.length && minors1617.length?'1fr 1fr':'1fr',gap:16,marginBottom:16}}>
+            {minors15Under.length > 0 && (
+              <div className="card" style={{borderLeft:'3px solid var(--red)',marginBottom:0}}>
+                <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                  <span className="card-title" style={{marginBottom:0,color:'var(--red-txt)'}}>
+                    <i className="ti ti-alert-triangle" /> Age 15 & under ({minors15Under.length})
+                  </span>
+                  <div style={{fontSize:11,color:'var(--text-sec)',marginTop:2}}>Most restricted — verify scheduling compliance</div>
+                </div>
+                {minors15Under.map(e => (
+                  <div key={e.id} style={{padding:'9px 16px',borderBottom:'0.5px solid var(--border)',display:'flex',alignItems:'center',gap:10}}>
+                    <div style={{flex:1}}>
+                      <Link to={`/employees/${e.id}`} style={{fontSize:13,fontWeight:500,color:'var(--text)',textDecoration:'none'}}>{e.name}</Link>
+                      <div style={{fontSize:11,color:'var(--text-sec)'}}>{e.currentPosition||e.position||'Team Member'} · Age {getAge(e.birthdate)}</div>
+                    </div>
+                    <Link to={`/employees/${e.id}`} className="btn btn-sm">View</Link>
+                  </div>
+                ))}
+              </div>
+            )}
+            {minors1617.length > 0 && (
+              <div className="card" style={{borderLeft:'3px solid var(--amber)',marginBottom:0}}>
+                <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                  <span className="card-title" style={{marginBottom:0,color:'var(--amber-txt)'}}>
+                    <i className="ti ti-alert-circle" /> Ages 16–17 ({minors1617.length})
+                  </span>
+                  <div style={{fontSize:11,color:'var(--text-sec)',marginTop:2}}>Minor — standard minor labor rules apply</div>
+                </div>
+                {minors1617.map(e => (
+                  <div key={e.id} style={{padding:'9px 16px',borderBottom:'0.5px solid var(--border)',display:'flex',alignItems:'center',gap:10}}>
+                    <div style={{flex:1}}>
+                      <Link to={`/employees/${e.id}`} style={{fontSize:13,fontWeight:500,color:'var(--text)',textDecoration:'none'}}>{e.name}</Link>
+                      <div style={{fontSize:11,color:'var(--text-sec)'}}>{e.currentPosition||e.position||'Team Member'} · Age {getAge(e.birthdate)}</div>
+                    </div>
+                    <Link to={`/employees/${e.id}`} className="btn btn-sm">View</Link>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Final Warning / Termination callouts */}
         {(finalWarningHours.length > 0 || terminated.length > 0) && (

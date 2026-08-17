@@ -304,7 +304,7 @@ export default function VerifyUpload() {
                           <div key={f.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
                             <input type="checkbox" checked={selectedFabricated.has(rowKey(emp.employeeId,f))} onChange={() => toggleFabricated(emp.employeeId, f)} style={{width:'auto'}} />
                             <div style={{flex:1}}>
-                              <div style={{fontSize:13,fontWeight:500}}>{emp.employeeName}</div>
+                              <Link to={`/employees/${emp.employeeId}`} style={{fontSize:13,fontWeight:500,color:"var(--text)",textDecoration:"none"}}>{emp.employeeName}</Link>
                               <div style={{fontSize:12,color:'var(--text-sec)'}}>{TYPE_LABELS[f.type]||f.type} · {f.date} · {f.detail}</div>
                             </div>
                             <Link to={`/employees/${emp.employeeId}`} className="btn btn-sm">View</Link>
@@ -367,7 +367,7 @@ export default function VerifyUpload() {
                     {report.filter(e => !e.notFound && e.missing.length).map(emp => (
                       <div key={emp.employeeId || emp.employeeName} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
                         <div style={{flex:1}}>
-                          <div style={{fontSize:13,fontWeight:500}}>{emp.employeeName}</div>
+                          <Link to={`/employees/${emp.employeeId}`} style={{fontSize:13,fontWeight:500,color:"var(--text)",textDecoration:"none"}}>{emp.employeeName}</Link>
                           <div style={{fontSize:12,color:'var(--text-sec)'}}>{emp.missing.length} flag{emp.missing.length!==1?'s':''} not yet recorded</div>
                         </div>
                         <button className="btn btn-sm" onClick={() => handleAddMissing(emp)}><i className="ti ti-plus" /> Add {emp.missing.length}</button>

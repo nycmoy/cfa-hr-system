@@ -35,6 +35,7 @@ export default function EmployeeDetail() {
   const [eLeadership, setELeadership] = useState(false)
   const [eEmail, setEEmail] = useState('')
   const [ePhone, setEPhone] = useState('')
+  const [eBirthdate, setEBirthdate] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => { load() }, [id])
@@ -95,6 +96,7 @@ export default function EmployeeDetail() {
     setELeadership(!!emp.leadershipTrack)
     setEEmail(emp.email || '')
     setEPhone(emp.phone || '')
+    setEBirthdate(emp.birthdate || '')
     setShowEdit(true)
   }
 
@@ -107,6 +109,7 @@ export default function EmployeeDetail() {
         area: eArea, leadershipTrack: eLeadership,
         email: eEmail || '',
         phone: ePhone || '',
+        birthdate: eBirthdate || '',
       })
       await load()
       setShowEdit(false)
@@ -115,6 +118,21 @@ export default function EmployeeDetail() {
 
   if (loading) return <div style={{padding:40,textAlign:'center',color:'var(--text-sec)'}}>Loading profile...</div>
   if (!emp) return <div style={{padding:40,textAlign:'center',color:'var(--text-sec)'}}>Employee not found.</div>
+
+  // Age and minor status
+  function getAge(birthdate) {
+    if (!birthdate) return null
+    const today = new Date()
+    const birth = new Date(birthdate)
+    let age = today.getFullYear() - birth.getFullYear()
+    const m = today.getMonth() - birth.getMonth()
+    if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--
+    return age
+  }
+  const age = getAge(emp.birthdate)
+  const isMinor = age !== null && age < 18
+  const is15Under = isMinor && age <= 15
+  const is1617 = isMinor && age >= 16
 
   const level = emp.leadershipStatus || emp.disciplineLevel || 'good_standing'
   const docFlags = flags.filter(f => ['noshow','tier2','tier1'].includes(f.type) && f.status === 'pending')
@@ -159,15 +177,18 @@ export default function EmployeeDetail() {
                   <span className={`badge ${emp.status==='active'?'badge-ok':'badge-gray'}`}>{emp.status||'active'}</span>
                   <span className="badge badge-info">{AREA_LABEL[emp.area]||'FOH + BOH'}</span>
                   {emp.leadershipTrack && <span className="badge badge-warn"><i className="ti ti-crown" style={{fontSize:11}} /> Leadership track</span>}
+                  {is15Under && <span className="badge badge-danger"><i className="ti ti-alert-triangle" style={{fontSize:11}} /> Minor · Age {age}</span>}
+                  {is1617 && <span className="badge badge-warn"><i className="ti ti-alert-triangle" style={{fontSize:11}} /> Minor · Age {age}</span>}
                 </div>
                 <div style={{fontSize:12,color:'var(--text-sec)',display:'flex',gap:16}}>
                   <span><i className="ti ti-calendar" aria-hidden="true" /> Hired: {emp.initialStartDate ? new Date(emp.initialStartDate).toLocaleDateString() : '—'}</span>
                   <span><i className="ti ti-calendar-event" aria-hidden="true" /> Current position since: {emp.currentPositionStartDate ? new Date(emp.currentPositionStartDate).toLocaleDateString() : '—'}</span>
                 </div>
-                {(emp.email || emp.phone) && (
+                {(emp.email || emp.phone || emp.birthdate) && (
                   <div style={{fontSize:12,color:'var(--text-sec)',display:'flex',gap:16,marginTop:4}}>
                     {emp.email && <span><i className="ti ti-mail" aria-hidden="true" /> <a href={`mailto:${emp.email}`} style={{color:'var(--text-sec)'}}>{emp.email}</a></span>}
                     {emp.phone && <span><i className="ti ti-phone" aria-hidden="true" /> <a href={`tel:${emp.phone}`} style={{color:'var(--text-sec)'}}>{emp.phone}</a></span>}
+                    {emp.birthdate && <span><i className="ti ti-cake" aria-hidden="true" /> DOB: {new Date(emp.birthdate).toLocaleDateString()}{age !== null ? ` (Age ${age})` : ''}</span>}
                   </div>
                 )}
               </div>
@@ -450,6 +471,11 @@ export default function EmployeeDetail() {
                   <label className="form-label">Phone</label>
                   <input type="tel" value={ePhone} onChange={e=>setEPhone(e.target.value)} placeholder="(555) 555-5555" />
                 </div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Date of birth</label>
+                <input type="date" value={eBirthdate} onChange={e=>setEBirthdate(e.target.value)} />
+                <div style={{fontSize:11,color:'var(--text-ter)',marginTop:3}}>Used to determine minor status and applicable labor rules.</div>
               </div>
             </div>
             <div className="modal-footer">
