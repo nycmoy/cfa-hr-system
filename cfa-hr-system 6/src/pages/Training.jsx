@@ -194,7 +194,7 @@ export default function Training() {
             <div className="card-title"><i className="ti ti-users" aria-hidden="true" /> Select employee</div>
             <select value={selectedEmp} onChange={e => setSelectedEmp(e.target.value)} style={{maxWidth:320}}>
               <option value="">— choose employee —</option>
-              {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+              {employees.filter(e => (e.status || 'active') === 'active').map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
             </select>
           </div>
         </div>

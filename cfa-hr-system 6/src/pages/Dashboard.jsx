@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getEmployees, getAllOpenFollowUps, getUploads, getTeams, getTeamMembers } from '../lib/db'
+import { getEmployees, getAllOpenFollowUps, getUploads, getTeams, getTeamMembers, getUpcomingEvaluations } from '../lib/db'
 import { DISCIPLINE_LABEL, DISCIPLINE_BADGE } from '../lib/disciplineLevels'
 
 export default function Dashboard() {
@@ -8,14 +8,15 @@ export default function Dashboard() {
   const [followups, setFollowups] = useState([])
   const [uploads, setUploads] = useState([])
   const [teams, setTeams] = useState([])
-  const [selectedTeam, setSelectedTeam] = useState(null) // { id, name }
+  const [evalAlerts, setEvalAlerts] = useState([])
+  const [selectedTeam, setSelectedTeam] = useState(null)
   const [teamMembers, setTeamMembers] = useState([])
   const [loadingMembers, setLoadingMembers] = useState(false)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    Promise.all([getEmployees(), getAllOpenFollowUps(), getUploads(), getTeams()])
-      .then(([e, f, u, t]) => { setEmployees(e); setFollowups(f); setUploads(u); setTeams(t) })
+    Promise.all([getEmployees(), getAllOpenFollowUps(), getUploads(), getTeams(), getUpcomingEvaluations(8)])
+      .then(([e, f, u, t, ev]) => { setEmployees(e); setFollowups(f); setUploads(u); setTeams(t); setEvalAlerts(ev) })
       .finally(() => setLoading(false))
   }, [])
 
@@ -30,7 +31,19 @@ export default function Dashboard() {
 
   if (loading) return <div style={{padding:40,textAlign:'center',color:'var(--text-sec)'}}>Loading...</div>
 
+  function getAge(birthdate) {
+    if (!birthdate) return null
+    const today = new Date()
+    const birth = new Date(birthdate)
+    let age = today.getFullYear() - birth.getFullYear()
+    const m = today.getMonth() - birth.getMonth()
+    if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--
+    return age
+  }
+
   const active = employees.filter(e => e.status === 'active')
+  const minors15Under = active.filter(e => { const a = getAge(e.birthdate); return a !== null && a <= 15 })
+  const minors1617 = active.filter(e => { const a = getAge(e.birthdate); return a !== null && a >= 16 && a < 18 })
   const levelOf = e => e.leadershipStatus || e.disciplineLevel || 'good_standing'
   const withDiscipline = active.filter(e => levelOf(e) !== 'good_standing')
   const finalWarningHours = active.filter(e => levelOf(e) === 'final_warning')
@@ -115,6 +128,50 @@ export default function Dashboard() {
           )}
         </div>
 
+        {/* Minors section */}
+        {(minors15Under.length > 0 || minors1617.length > 0) && (
+          <div style={{display:'grid',gridTemplateColumns:minors15Under.length && minors1617.length?'1fr 1fr':'1fr',gap:16,marginBottom:16}}>
+            {minors15Under.length > 0 && (
+              <div className="card" style={{borderLeft:'3px solid var(--red)',marginBottom:0}}>
+                <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                  <span className="card-title" style={{marginBottom:0,color:'var(--red-txt)'}}>
+                    <i className="ti ti-alert-triangle" /> Age 15 & under ({minors15Under.length})
+                  </span>
+                  <div style={{fontSize:11,color:'var(--text-sec)',marginTop:2}}>Most restricted — verify scheduling compliance</div>
+                </div>
+                {minors15Under.map(e => (
+                  <div key={e.id} style={{padding:'9px 16px',borderBottom:'0.5px solid var(--border)',display:'flex',alignItems:'center',gap:10}}>
+                    <div style={{flex:1}}>
+                      <Link to={`/employees/${e.id}`} style={{fontSize:13,fontWeight:500,color:'var(--text)',textDecoration:'none'}}>{e.name}</Link>
+                      <div style={{fontSize:11,color:'var(--text-sec)'}}>{e.currentPosition||e.position||'Team Member'} · Age {getAge(e.birthdate)}</div>
+                    </div>
+                    <Link to={`/employees/${e.id}`} className="btn btn-sm">View</Link>
+                  </div>
+                ))}
+              </div>
+            )}
+            {minors1617.length > 0 && (
+              <div className="card" style={{borderLeft:'3px solid var(--amber)',marginBottom:0}}>
+                <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                  <span className="card-title" style={{marginBottom:0,color:'var(--amber-txt)'}}>
+                    <i className="ti ti-alert-circle" /> Ages 16–17 ({minors1617.length})
+                  </span>
+                  <div style={{fontSize:11,color:'var(--text-sec)',marginTop:2}}>Minor — standard minor labor rules apply</div>
+                </div>
+                {minors1617.map(e => (
+                  <div key={e.id} style={{padding:'9px 16px',borderBottom:'0.5px solid var(--border)',display:'flex',alignItems:'center',gap:10}}>
+                    <div style={{flex:1}}>
+                      <Link to={`/employees/${e.id}`} style={{fontSize:13,fontWeight:500,color:'var(--text)',textDecoration:'none'}}>{e.name}</Link>
+                      <div style={{fontSize:11,color:'var(--text-sec)'}}>{e.currentPosition||e.position||'Team Member'} · Age {getAge(e.birthdate)}</div>
+                    </div>
+                    <Link to={`/employees/${e.id}`} className="btn btn-sm">View</Link>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Final Warning / Termination callouts */}
         {(finalWarningHours.length > 0 || terminated.length > 0) && (
           <div style={{display:'grid',gridTemplateColumns:finalWarningHours.length && terminated.length ? '1fr 1fr' : '1fr',gap:16,marginBottom:16}}>
@@ -193,6 +250,35 @@ export default function Dashboard() {
           </div>
         </div>
 
+        {/* Evaluation alerts */}
+        {evalAlerts.length > 0 && (
+          <div className="card" style={{marginBottom:16,borderLeft:'3px solid var(--amber)'}}>
+            <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+              <span className="card-title" style={{marginBottom:0,color:'var(--amber-txt)'}}>
+                <i className="ti ti-clipboard-list" aria-hidden="true" /> Evaluations due soon ({evalAlerts.length})
+              </span>
+              <Link to="/evaluations" style={{fontSize:12,color:'var(--blue)',textDecoration:'none'}}>View all</Link>
+            </div>
+            {evalAlerts.slice(0,5).map((alert, i) => {
+              const TYPE_LABELS = { onboarding_30:'30-Day Check-in', onboarding_60:'60-Day Check-in', onboarding_90:'90-Day Review', triannual:'Triannual Evaluation' }
+              return (
+                <div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                  <div style={{width:40,height:40,borderRadius:'var(--radius)',background:alert.overdue?'var(--red-lt)':'var(--amber-lt)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                    <div style={{fontSize:16,fontWeight:700,color:alert.overdue?'var(--red-txt)':'var(--amber-txt)',lineHeight:1}}>{alert.overdue?'!':alert.daysUntil}</div>
+                    <div style={{fontSize:8,color:alert.overdue?'var(--red-txt)':'var(--amber-txt)',textTransform:'uppercase'}}>{alert.overdue?'overdue':'days'}</div>
+                  </div>
+                  <div style={{flex:1}}>
+                    <Link to={`/employees/${alert.employee.id}`} style={{fontSize:13,fontWeight:500,color:'var(--text)',textDecoration:'none'}}>{alert.employee.name}</Link>
+                    <div style={{fontSize:12,color:'var(--text-sec)'}}>{TYPE_LABELS[alert.type]||alert.type} · Due {alert.dueDate.toLocaleDateString()}</div>
+                  </div>
+                  <Link to="/evaluations" className="btn btn-sm"><i className="ti ti-clipboard-check" /> Complete</Link>
+                </div>
+              )
+            })}
+            {evalAlerts.length > 5 && <div style={{padding:'10px 16px',fontSize:12,color:'var(--text-sec)'}}>+{evalAlerts.length-5} more — <Link to="/evaluations" style={{color:'var(--blue)'}}>view all</Link></div>}
+          </div>
+        )}
+
         {/* Quick actions */}
         <div className="card" style={{marginTop:16}}>
           <div className="card-body">
@@ -204,6 +290,8 @@ export default function Dashboard() {
               <Link to="/documentation" className="btn"><i className="ti ti-file-plus" aria-hidden="true" /> New documentation</Link>
               <Link to="/training" className="btn"><i className="ti ti-school" aria-hidden="true" /> Position training</Link>
               <Link to="/positions" className="btn"><i className="ti ti-list-details" aria-hidden="true" /> Manage positions</Link>
+              <Link to="/evaluations" className="btn"><i className="ti ti-clipboard-list" aria-hidden="true" /> Evaluations</Link>
+              <Link to="/conduct" className="btn"><i className="ti ti-shield-half" aria-hidden="true" /> Standards of conduct</Link>
             </div>
           </div>
         </div>

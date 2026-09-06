@@ -593,7 +593,7 @@ export default function Flags() {
                   <tbody>
                     {selectedFlags.map(f => (
                       <tr key={rowKey(f)}>
-                        <td style={{fontWeight:500}}>{f.employeeName}</td>
+                        <td><Link to={`/employees/${f.employeeId}`} style={{fontWeight:500,color:"var(--text)",textDecoration:"none"}}>{f.employeeName}</Link></td>
                         <td><span className="badge badge-gray">{TYPE_LABELS[f.type]||f.type}</span></td>
                         <td className="mono" style={{fontSize:11}}>{f.type==='tier1'?f.windowLabel:f.date}</td>
                       </tr>
@@ -711,7 +711,7 @@ export default function Flags() {
                         <tbody>
                           {duplicateGroups.map((g, i) => (
                             <tr key={i}>
-                              <td style={{fontWeight:500}}>{g.employeeName}</td>
+                              <td><Link to={`/employees/${g.employeeId}`} style={{fontWeight:500,color:"var(--text)",textDecoration:"none"}}>{g.employeeName}</Link></td>
                               <td><span className="badge badge-gray">{TYPE_LABELS[g.keep.type]||g.keep.type}</span></td>
                               <td className="mono" style={{fontSize:11}}>{g.keep.type==='tier1'?g.keep.windowLabel:g.keep.date}</td>
                               <td><span className={`badge ${statusBadge(g.keep.status)}`}>{g.keep.status||'pending'}</span></td>

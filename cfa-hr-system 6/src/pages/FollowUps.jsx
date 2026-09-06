@@ -60,7 +60,7 @@ export default function FollowUps() {
         <div key={`${f.employeeId}-${f.id}`} style={{display:'flex',alignItems:'center',gap:12,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
           <i className="ti ti-clock" style={{color,fontSize:18,flexShrink:0}} aria-hidden="true" />
           <div style={{flex:1}}>
-            <div style={{fontSize:13,fontWeight:500}}>{f.employeeName} — {f.title}</div>
+            <div style={{fontSize:13,fontWeight:500}}><Link to={`/employees/${f.employeeId}`} style={{color:'var(--text)',textDecoration:'none'}}>{f.employeeName}</Link> — {f.title}</div>
             <div style={{fontSize:12,color:'var(--text-sec)'}}>Due {new Date(f.dueDate).toLocaleDateString()}{f.notes ? ` · ${f.notes}` : ''}</div>
           </div>
           <Link to={`/employees/${f.employeeId}`} className="btn btn-sm">View employee</Link>

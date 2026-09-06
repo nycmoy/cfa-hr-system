@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { getEmployees, getAttendanceFlags, updateFlagStatus, createDocument, updateEmployee } from '../lib/db'
+import { getEmployees, getAttendanceFlags, updateFlagStatus, createDocument, updateEmployee, getDocuments } from '../lib/db'
 import { summarizeFlagHistory } from '../lib/attendanceEngine'
-import { DISCIPLINE_LABEL, DISCIPLINE_BADGE, DOC_TYPE_META, nextDisciplineStep } from '../lib/disciplineLevels'
+import { DISCIPLINE_LABEL, DISCIPLINE_BADGE, DOC_TYPE_META, nextDisciplineStep, computeEffectiveDisciplineLevel } from '../lib/disciplineLevels'
 
 const TYPE_LABELS = {
   noshow: 'No-show', tier2: '10+ min late', tier1: 'Tier 1 pattern',
@@ -54,11 +54,18 @@ export default function FlagReview() {
     setNote('')
     setDocSummary(null)
     ;(async () => {
-      const allFlags = await getAttendanceFlags(current.employee.id)
+      const [allFlags, empDocs] = await Promise.all([
+        getAttendanceFlags(current.employee.id),
+        getDocuments(current.employee.id),
+      ])
       const summary = summarizeFlagHistory(allFlags, current.flag.date)
-      const level = current.employee.leadershipStatus || current.employee.disciplineLevel || 'good_standing'
-      const suggested = nextDisciplineStep(level)
-      setDocSummary({ summary, level, suggested, allFlags })
+      // Compute effective level from recent docs (auto-rolls off with the 4-month window)
+      const computedLevel = computeEffectiveDisciplineLevel(empDocs, current.flag.date)
+      const storedLevel = current.employee.leadershipStatus || current.employee.disciplineLevel || 'good_standing'
+      const hasRecentActivity = summary.absenceCount > 0 || summary.lateCount > 0
+      const effectiveLevel = hasRecentActivity ? computedLevel : 'good_standing'
+      const suggested = nextDisciplineStep(effectiveLevel)
+      setDocSummary({ summary, level: storedLevel, effectiveLevel, suggested, allFlags })
     })()
   }, [idx])
 
@@ -160,9 +167,11 @@ export default function FlagReview() {
   const f = current.flag
   const emp = current.employee
   const displayDate = f.type === 'tier1' ? f.windowLabel : f.date
-  const level = emp.leadershipStatus || emp.disciplineLevel || 'good_standing'
-  const suggested = docSummary?.suggested || nextDisciplineStep(level)
+  const storedLevel = emp.leadershipStatus || emp.disciplineLevel || 'good_standing'
+  const level = docSummary?.level || storedLevel
+  const suggested = docSummary?.suggested || nextDisciplineStep(docSummary?.effectiveLevel || storedLevel)
   const suggestedMeta = DOC_TYPE_META[suggested]
+  const rolledOff = storedLevel !== 'good_standing' && docSummary && !docSummary.summary?.combinedSummary
 
   return (
     <>
@@ -213,8 +222,18 @@ export default function FlagReview() {
             </div>
             {docSummary?.summary?.combinedSummary && (
               <div style={{marginTop:12,background:'var(--amber-lt)',border:'0.5px solid #FAC775',borderRadius:'var(--radius)',padding:10}}>
-                <div style={{fontSize:11,fontWeight:500,color:'var(--amber-txt)',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:4}}>Prior history (as of this date)</div>
+                <div style={{fontSize:11,fontWeight:500,color:'var(--amber-txt)',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:4}}>Prior history (within 4-month window)</div>
                 <div style={{fontSize:12,color:'var(--amber-txt)'}}>{docSummary.summary.combinedSummary}</div>
+              </div>
+            )}
+            {rolledOff && (
+              <div style={{marginTop:12,background:'var(--bg)',border:'0.5px solid var(--border)',borderRadius:'var(--radius)',padding:10}}>
+                <div style={{fontSize:11,fontWeight:500,color:'var(--text-sec)',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:4}}>
+                  <i className="ti ti-clock-off" /> Prior offenses rolled off
+                </div>
+                <div style={{fontSize:12,color:'var(--text-sec)'}}>
+                  {DISCIPLINE_LABEL[level]} is on record but all prior incidents are outside the 4-month window. Escalation resets — this incident will be treated as a first offense.
+                </div>
               </div>
             )}
           </div>

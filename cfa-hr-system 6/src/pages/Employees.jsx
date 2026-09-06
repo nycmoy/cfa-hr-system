@@ -68,17 +68,18 @@ export default function Employees() {
       header: true,
       skipEmptyLines: true,
       complete: (result) => {
-        // Accept either a dedicated employee CSV or the punch variance report
-        // Look for a FULL_NAME column or a Name column
         const rows = result.data
-        const nameKey = Object.keys(rows[0] || {}).find(k =>
-          k.trim().toUpperCase() === 'FULL_NAME' || k.trim().toUpperCase() === 'NAME'
-        )
-        if (!nameKey) {
-          alert('CSV must have a FULL_NAME or Name column.')
-          return
-        }
-        // Deduplicate names within the file
+        const keys = Object.keys(rows[0] || {})
+        const findKey = (...candidates) => keys.find(k => candidates.includes(k.trim().toUpperCase()))
+
+        const nameKey = findKey('FULL_NAME', 'NAME', 'EMPLOYEE')
+        if (!nameKey) { alert('CSV must have a Name or FULL_NAME column.'); return }
+
+        const emailKey = findKey('EMAIL', 'EMAIL ADDRESS', 'E-MAIL')
+        const phoneKey = findKey('PHONE', 'PHONE NUMBER', 'MOBILE', 'CELL')
+        const hireDateKey = findKey('HIRE DATE', 'HIREDATE', 'START DATE', 'STARTDATE', 'HIRED')
+        const birthdateKey = findKey('BIRTHDATE', 'BIRTH DATE', 'DATE OF BIRTH', 'DOB', 'BIRTHDAY')
+
         const seen = new Set()
         const unique = []
         for (const row of rows) {
@@ -87,7 +88,11 @@ export default function Employees() {
             seen.add(name)
             unique.push({
               name,
-              position: row.POSITION || row.Position || row.ROLE || row.Role || 'Team Member',
+              position: row.POSITION || row.Position || row.ROLE || row.Role || '',
+              email: emailKey ? (row[emailKey] || '').trim() : '',
+              phone: phoneKey ? (row[phoneKey] || '').trim() : '',
+              hireDate: hireDateKey ? (row[hireDateKey] || '').trim() : '',
+              birthdate: birthdateKey ? (row[birthdateKey] || '').trim() : '',
               raw: row,
             })
           }
@@ -101,21 +106,29 @@ export default function Employees() {
   async function runImport() {
     setImporting(true)
     const existing = await getEmployees()
-    const existingIds = new Set(existing.map(e => e.id))
-    const existingNames = new Set(existing.map(e => e.name.toLowerCase()))
+    const existingByNorm = {}
+    for (const e of existing) existingByNorm[e.name.replace(/\s+/g,' ').trim().toLowerCase()] = e
 
     let added = 0, skipped = 0, updated = 0
     const details = []
 
     for (const row of importRows) {
-      const id = row.name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/__+/g, '_')
-      if (existingIds.has(id) || existingNames.has(row.name.toLowerCase())) {
-        // Duplicate — update position if provided, don't overwrite discipline data
-        await upsertEmployee(row.name, { position: row.position })
-        skipped++
-        details.push({ name: row.name, result: 'duplicate — skipped (data preserved)' })
+      const normName = row.name.replace(/\s+/g,' ').trim().toLowerCase()
+      const existingEmp = existingByNorm[normName]
+      const updates = {}
+      if (row.position) updates.position = row.position
+      if (row.email) updates.email = row.email
+      if (row.phone) updates.phone = row.phone
+      if (row.hireDate) updates.initialStartDate = row.hireDate
+      if (row.birthdate) updates.birthdate = row.birthdate
+
+      if (existingEmp) {
+        await upsertEmployee(row.name, updates)
+        const fieldsUpdated = Object.keys(updates).filter(k => k !== 'position' || row.position).join(', ')
+        if (fieldsUpdated) { updated++; details.push({ name: row.name, result: `updated: ${fieldsUpdated}` }) }
+        else { skipped++; details.push({ name: row.name, result: 'no new data — skipped' }) }
       } else {
-        await upsertEmployee(row.name, { position: row.position })
+        await upsertEmployee(row.name, { position: row.position || 'Team Member', ...updates })
         added++
         details.push({ name: row.name, result: 'added' })
       }
@@ -200,7 +213,7 @@ export default function Employees() {
                         <div style={{display:'flex',alignItems:'center',gap:10}}>
                           <div style={{width:4,height:32,background:sevColor(level),flexShrink:0}} />
                           <div>
-                            <div style={{fontWeight:500}}>{emp.name}</div>
+                            <Link to={`/employees/${emp.id}`} style={{fontWeight:500,color:'var(--text)',textDecoration:'none'}}>{emp.name}</Link>
                             <div className="mono">{emp.id}</div>
                           </div>
                         </div>
@@ -324,23 +337,25 @@ export default function Employees() {
               {importStep === 'preview' && (
                 <>
                   <div style={{marginBottom:12,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-                    <div style={{fontSize:13,fontWeight:500}}>{importRows.length} unique employees found in file</div>
+                    <div style={{fontSize:13,fontWeight:500}}>{importRows.length} employees found in file</div>
                     <button className="btn btn-sm" onClick={() => setImportStep('upload')}>← Back</button>
                   </div>
                   <div style={{maxHeight:320,overflowY:'auto',border:'0.5px solid var(--border)',borderRadius:'var(--radius)'}}>
                     <table className="data-table">
-                      <thead><tr><th>Name</th><th>Position</th><th>Status</th></tr></thead>
+                      <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Hire date</th><th>Birthdate</th><th>Status</th></tr></thead>
                       <tbody>
                         {importRows.map((r,i) => {
-                          const id = r.name.toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/__+/g,'_')
-                          const isDupe = employees.some(e => e.id === id || e.name.toLowerCase() === r.name.toLowerCase())
+                          const isDupe = employees.some(e => e.name.replace(/\s+/g,' ').trim().toLowerCase() === r.name.replace(/\s+/g,' ').trim().toLowerCase())
                           return (
                             <tr key={i}>
                               <td style={{fontWeight:500}}>{r.name}</td>
-                              <td style={{color:'var(--text-sec)',fontSize:12}}>{r.position}</td>
+                              <td style={{fontSize:12,color:'var(--text-sec)'}}>{r.email||'—'}</td>
+                              <td style={{fontSize:12,color:'var(--text-sec)'}}>{r.phone||'—'}</td>
+                              <td style={{fontSize:12,color:'var(--text-sec)'}}>{r.hireDate||'—'}</td>
+                              <td style={{fontSize:12,color:'var(--text-sec)'}}>{r.birthdate||'—'}</td>
                               <td>
                                 {isDupe
-                                  ? <span className="badge badge-warn">Exists — will skip</span>
+                                  ? <span className="badge badge-info">Exists — will update</span>
                                   : <span className="badge badge-ok">New — will add</span>}
                               </td>
                             </tr>
@@ -350,8 +365,8 @@ export default function Employees() {
                     </table>
                   </div>
                   <div style={{marginTop:12,fontSize:12,color:'var(--text-sec)'}}>
-                    <strong>{importRows.filter(r => !employees.some(e => e.name.toLowerCase()===r.name.toLowerCase())).length}</strong> new ·{' '}
-                    <strong>{importRows.filter(r => employees.some(e => e.name.toLowerCase()===r.name.toLowerCase())).length}</strong> duplicates (will be skipped)
+                    <strong>{importRows.filter(r => !employees.some(e => e.name.replace(/\s+/g,' ').trim().toLowerCase()===r.name.replace(/\s+/g,' ').trim().toLowerCase())).length}</strong> new ·{' '}
+                    <strong>{importRows.filter(r => employees.some(e => e.name.replace(/\s+/g,' ').trim().toLowerCase()===r.name.replace(/\s+/g,' ').trim().toLowerCase())).length}</strong> existing (contact info will be updated)
                   </div>
                 </>
               )}
@@ -364,7 +379,8 @@ export default function Employees() {
                   </div>
                   <div className="metric-grid metric-grid-3" style={{marginBottom:16}}>
                     <div className="metric"><div className="metric-label">Added</div><div className="metric-value" style={{color:'var(--green)'}}>{importResult.added}</div></div>
-                    <div className="metric"><div className="metric-label">Skipped (duplicate)</div><div className="metric-value" style={{color:'var(--amber-txt)'}}>{importResult.skipped}</div></div>
+                    <div className="metric"><div className="metric-label">Updated</div><div className="metric-value" style={{color:'var(--blue)'}}>{importResult.updated}</div></div>
+                    <div className="metric"><div className="metric-label">Skipped</div><div className="metric-value" style={{color:'var(--amber-txt)'}}>{importResult.skipped}</div></div>
                     <div className="metric"><div className="metric-label">Total processed</div><div className="metric-value">{importRows.length}</div></div>
                   </div>
                   <div style={{maxHeight:200,overflowY:'auto',border:'0.5px solid var(--border)',borderRadius:'var(--radius)'}}>

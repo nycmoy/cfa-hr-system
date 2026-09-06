@@ -1,6 +1,45 @@
 // ─── Discipline Ladder — single source of truth ──────────────────────────────
 // Verbal Warning → Written Warning → Final Written Warning + Reduced Hours → Termination
 
+export const LEVEL_ORDER = {
+  good_standing: 0,
+  verbal_warning: 1,
+  written_warning: 2,
+  final_warning: 3,
+  termination: 4,
+}
+
+// Computes an employee's current effective discipline level by looking at
+// which documentation records fall within the rolling 4-month window.
+// When a prior offense rolls off, this function returns a lower level —
+// potentially good_standing — so the displayed status drops automatically.
+// Called on profile load and silently stored back to Firestore so every
+// page that reads disciplineLevel stays current without a separate job.
+export function computeEffectiveDisciplineLevel(docs, asOfDate = new Date(), rolloffMonths = 4) {
+  const cutoff = asOfDate instanceof Date ? asOfDate : new Date(asOfDate)
+  const rolloffStart = new Date(cutoff)
+  rolloffStart.setMonth(rolloffStart.getMonth() - rolloffMonths)
+
+  let highest = 'good_standing'
+
+  for (const d of docs) {
+    if (!d.countsTowardDiscipline) continue
+    // Use createdAt timestamp if available, fall back to the doc date field
+    const docDate = d.createdAt?.seconds
+      ? new Date(d.createdAt.seconds * 1000)
+      : d.date ? new Date(d.date) : null
+    if (!docDate || isNaN(docDate)) continue
+    if (docDate < rolloffStart || docDate > cutoff) continue
+
+    const level = d.docType // verbal_warning, written_warning, etc.
+    if ((LEVEL_ORDER[level] || 0) > (LEVEL_ORDER[highest] || 0)) {
+      highest = level
+    }
+  }
+
+  return highest
+}
+
 export const DISCIPLINE_LEVELS = [
   { value: 'good_standing',  label: 'Good standing',                 badge: 'badge-ok',     counts: false },
   { value: 'verbal_warning', label: 'Verbal Warning',                badge: 'badge-info',   counts: true  },
