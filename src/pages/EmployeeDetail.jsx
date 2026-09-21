@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { getEmployee, getAttendanceFlags, getDocuments, getRatings, getFollowUps, updateEmployee, getPositions, getTraining, getTeams, updateEmployeeTeams, addTeam } from '../lib/db'
+import { getEmployee, getAttendanceFlags, getDocuments, getRatings, getFollowUps, updateEmployee, getPositions, getTraining, getTeams, updateEmployeeTeams, addTeam, getEvaluations, getConductEntries, CONDUCT_LEVELS } from '../lib/db'
 import { DISCIPLINE_LABEL, DISCIPLINE_BADGE, computeEffectiveDisciplineLevel } from '../lib/disciplineLevels'
 import { applicablePositions } from '../lib/positionRules'
 
@@ -20,6 +20,8 @@ export default function EmployeeDetail() {
   const [training, setTraining] = useState([])
   const [teams, setTeams] = useState([])
   const [empTeams, setEmpTeams] = useState([])
+  const [evaluations, setEvaluations] = useState([])
+  const [conductEntries, setConductEntries] = useState([])
   const [tab, setTab] = useState('overview')
   const [loading, setLoading] = useState(true)
   const [showEdit, setShowEdit] = useState(false)
@@ -41,13 +43,16 @@ export default function EmployeeDetail() {
   useEffect(() => { load() }, [id])
 
   async function load() {
-    const [e, f, d, r, fu, p, tr, t] = await Promise.all([
+    const [e, f, d, r, fu, p, tr, t, evals, conduct] = await Promise.all([
       getEmployee(id), getAttendanceFlags(id), getDocuments(id),
       getRatings(id), getFollowUps(id), getPositions(), getTraining(id), getTeams(),
+      getEvaluations(id), getConductEntries(id),
     ])
     setEmp(e); setFlags(f); setDocs(d); setRatings(r); setFollowups(fu)
     setPositions(p); setTraining(tr); setTeams(t)
     setEmpTeams(e?.teams || [])
+    setEvaluations(evals)
+    setConductEntries(conduct)
 
     // Recompute effective discipline level from recent documentation history.
     // If offenses have rolled off the 4-month window, this will return a
@@ -266,7 +271,7 @@ export default function EmployeeDetail() {
         )}
 
         <div className="tab-row" style={{marginBottom:0}}>
-          {[['overview','Overview'],['attendance','Attendance'],['documents','Documentation'],['training','Training'],['ratings','Ratings']].map(([v,l]) => (
+          {[['overview','Overview'],['attendance','Attendance'],['documents','Documentation'],['training','Training'],['ratings','Ratings'],['evaluations','Evaluations'],['conduct','Conduct']].map(([v,l]) => (
             <div key={v} className={`tab${tab===v?' active':''}`} onClick={() => setTab(v)}>{l}</div>
           ))}
         </div>
@@ -423,6 +428,88 @@ export default function EmployeeDetail() {
                     })}
                   </tbody>
                 </table>
+              )}
+            </div>
+          )}
+
+          {tab === 'evaluations' && (() => {
+            const EVAL_LABELS = { onboarding_30:'30-Day',onboarding_60:'60-Day',onboarding_90:'90-Day',triannual:'Triannual' }
+            const hireDate = emp.initialStartDate ? new Date(emp.initialStartDate) : null
+            const today = new Date(); today.setHours(0,0,0,0)
+            const completedTypes = new Set(evaluations.filter(e=>e.status==='completed').map(e=>e.type))
+            const milestones = hireDate ? [30,60,90].map(days => {
+              const due = new Date(hireDate); due.setDate(due.getDate()+days)
+              const type = `onboarding_${days}`
+              return { type, label:`${days}-Day Evaluation`, due, completed: completedTypes.has(type) }
+            }) : []
+            return (
+              <div>
+                <div style={{marginBottom:12,display:'flex',justifyContent:'flex-end'}}>
+                  <Link to={`/evaluations`} className="btn btn-sm"><i className="ti ti-external-link" /> Manage evaluations</Link>
+                </div>
+                {hireDate ? (
+                  <div className="card" style={{padding:0,marginBottom:16}}>
+                    <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}><span className="card-title" style={{marginBottom:0}}>Onboarding milestones</span></div>
+                    {milestones.map(m => (
+                      <div key={m.type} style={{display:'flex',alignItems:'center',gap:12,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                        <i className={`ti ${m.completed?'ti-circle-check':'ti-circle-dashed'}`} style={{fontSize:20,color:m.completed?'var(--green)':m.due<today?'var(--red)':'var(--text-ter)'}} />
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:13,fontWeight:500}}>{m.label}</div>
+                          <div style={{fontSize:12,color:'var(--text-sec)'}}>Due {m.due.toLocaleDateString()}</div>
+                        </div>
+                        <span className={`badge ${m.completed?'badge-ok':m.due<today?'badge-danger':'badge-warn'}`}>
+                          {m.completed?'Completed':m.due<today?'Overdue':'Upcoming'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="warn-box" style={{marginBottom:16}}><i className="ti ti-info-circle" /><div>Set a hire date on this profile to track onboarding milestones.</div></div>
+                )}
+                <div className="card" style={{padding:0}}>
+                  <div style={{padding:'12px 16px',borderBottom:'0.5px solid var(--border)'}}><span className="card-title" style={{marginBottom:0}}>Evaluation history</span></div>
+                  {evaluations.length===0?(
+                    <div className="empty-state" style={{padding:24}}><i className="ti ti-clipboard" /><div>No evaluations completed yet.</div></div>
+                  ):evaluations.map(e=>(
+                    <div key={e.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13,fontWeight:500}}>{EVAL_LABELS[e.type]||e.type}</div>
+                        {e.notes&&<div style={{fontSize:12,color:'var(--text-sec)'}}>{e.notes}</div>}
+                      </div>
+                      <span className="mono" style={{fontSize:11}}>{e.completedDate||e.scheduledDate}</span>
+                      <span className={`badge ${e.status==='completed'?'badge-ok':'badge-warn'}`}>{e.status}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
+
+          {tab === 'conduct' && (
+            <div>
+              <div style={{marginBottom:12,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div style={{fontSize:13,color:'var(--text-sec)'}}>{conductEntries.length} conduct record{conductEntries.length!==1?'s':''} on file</div>
+                <Link to={`/conduct?empId=${id}`} className="btn btn-sm btn-primary"><i className="ti ti-plus" /> New entry</Link>
+              </div>
+              {conductEntries.length===0?(
+                <div className="empty-state"><i className="ti ti-shield-check" style={{color:'var(--green)'}} /><div>No conduct entries on file.</div></div>
+              ):(
+                <div className="card" style={{padding:0}}>
+                  {conductEntries.map(e=>{
+                    const level = CONDUCT_LEVELS.find(l=>l.value===e.type)
+                    return (
+                      <div key={e.id} style={{padding:'10px 16px',borderBottom:'0.5px solid var(--border)'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                          <span className={`badge ${level?.badge||'badge-gray'}`}>{level?.label||e.type}</span>
+                          <span className="mono" style={{fontSize:11,color:'var(--text-sec)'}}>{e.date}</span>
+                          {e.category&&<span style={{fontSize:12,color:'var(--text-ter)'}}>· {e.category}</span>}
+                        </div>
+                        {e.description&&<div style={{fontSize:13}}>{e.description}</div>}
+                        {e.notes&&<div style={{fontSize:12,color:'var(--text-sec)',marginTop:2}}>{e.notes}</div>}
+                      </div>
+                    )
+                  })}
+                </div>
               )}
             </div>
           )}

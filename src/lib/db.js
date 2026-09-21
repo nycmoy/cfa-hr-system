@@ -638,3 +638,72 @@ export async function getUploads() {
     return []
   }
 }
+
+// ─── EVALUATIONS ──────────────────────────────────────────────────────────────
+export async function getEvaluations(employeeId) {
+  try {
+    const snap = await getDocs(query(collection(db, 'employees', employeeId, 'evaluations'), orderBy('scheduledDate', 'desc')))
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+  } catch { return [] }
+}
+
+export async function createEvaluation(employeeId, data) {
+  return addDoc(collection(db, 'employees', employeeId, 'evaluations'), { ...data, createdAt: serverTimestamp(), status: data.status || 'upcoming' })
+}
+
+export async function updateEvaluation(employeeId, evalId, data) {
+  return updateDoc(doc(db, 'employees', employeeId, 'evaluations', evalId), { ...data, updatedAt: serverTimestamp() })
+}
+
+export async function getUpcomingEvaluations(daysBefore = 8) {
+  try {
+    const employees = await getEmployees()
+    const today = new Date(); today.setHours(0,0,0,0)
+    const windowEnd = new Date(today); windowEnd.setDate(windowEnd.getDate() + daysBefore)
+    const alerts = []
+    for (const emp of employees) {
+      if ((emp.status || 'active') !== 'active') continue
+      const hireDate = emp.initialStartDate ? new Date(emp.initialStartDate) : null
+      if (!hireDate || isNaN(hireDate)) continue
+      const existingEvals = await getEvaluations(emp.id)
+      const completedTypes = new Set(existingEvals.filter(e => e.status === 'completed').map(e => e.type))
+      for (const days of [30, 60, 90]) {
+        const type = `onboarding_${days}`
+        if (completedTypes.has(type)) continue
+        const dueDate = new Date(hireDate); dueDate.setDate(dueDate.getDate() + days); dueDate.setHours(0,0,0,0)
+        if (dueDate >= today && dueDate <= windowEnd) alerts.push({ employee: emp, type, dueDate, daysUntil: Math.round((dueDate - today) / 86400000) })
+      }
+      let triDate = new Date(hireDate)
+      while (triDate <= today) { triDate = new Date(triDate); triDate.setMonth(triDate.getMonth() + 4) }
+      triDate.setHours(0,0,0,0)
+      const periodKey = `triannual_${triDate.toISOString().slice(0,7)}`
+      const doneThisPeriod = existingEvals.some(e => e.type === 'triannual' && e.periodKey === periodKey && e.status === 'completed')
+      if (!doneThisPeriod && triDate >= today && triDate <= windowEnd) alerts.push({ employee: emp, type: 'triannual', dueDate: triDate, daysUntil: Math.round((triDate - today) / 86400000), periodKey })
+    }
+    return alerts.sort((a, b) => a.daysUntil - b.daysUntil)
+  } catch (err) { console.error('getUpcomingEvaluations:', err); return [] }
+}
+
+// ─── STANDARDS OF CONDUCT ─────────────────────────────────────────────────────
+export const CONDUCT_LEVELS = [
+  { value: 'ownership_journal', label: 'Ownership Journal Entry', badge: 'badge-info',   counts: false },
+  { value: 'verbal_warning',    label: 'Verbal Warning',           badge: 'badge-warn',   counts: true  },
+  { value: 'written_warning',   label: 'Written Warning',          badge: 'badge-warn',   counts: true  },
+  { value: 'final_warning',     label: 'Final Warning',            badge: 'badge-danger', counts: true  },
+  { value: 'termination',       label: 'Termination',              badge: 'badge-danger', counts: true  },
+]
+
+export async function getConductEntries(employeeId) {
+  try {
+    const snap = await getDocs(query(collection(db, 'employees', employeeId, 'conduct'), orderBy('date', 'desc')))
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+  } catch { return [] }
+}
+
+export async function createConductEntry(employeeId, data) {
+  return addDoc(collection(db, 'employees', employeeId, 'conduct'), { ...data, createdAt: serverTimestamp(), status: 'active' })
+}
+
+export async function updateConductEntry(employeeId, entryId, data) {
+  return updateDoc(doc(db, 'employees', employeeId, 'conduct', entryId), { ...data, updatedAt: serverTimestamp() })
+}

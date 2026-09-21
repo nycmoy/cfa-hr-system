@@ -38,11 +38,17 @@ export default function Layout() {
         <NavLink to="/documentation" className={({isActive})=>`nav-item${isActive?' active':''}`}>
           <i className="ti ti-file-text" aria-hidden="true" /> Documentation
         </NavLink>
+        <NavLink to="/conduct" className={({isActive})=>`nav-item${isActive?' active':''}`}>
+          <i className="ti ti-shield-half" aria-hidden="true" /> Standards of conduct
+        </NavLink>
         <NavLink to="/followups" className={({isActive})=>`nav-item${isActive?' active':''}`}>
           <i className="ti ti-calendar-check" aria-hidden="true" /> Follow-ups
         </NavLink>
 
         <div className="nav-section">Team</div>
+        <NavLink to="/evaluations" className={({isActive})=>`nav-item${isActive?' active':''}`}>
+          <i className="ti ti-clipboard-list" aria-hidden="true" /> Evaluations
+        </NavLink>
         <NavLink to="/training" className={({isActive})=>`nav-item${isActive?' active':''}`}>
           <i className="ti ti-school" aria-hidden="true" /> Position training
         </NavLink>
